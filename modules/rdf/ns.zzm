@@ -1,0 +1,68 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/ns - Common RDF namespace constants.
+
+=head1 SYNOPSIS
+
+  from rdf/ns import RDF_NS, RDFS_NS, OWL_NS, SKOS_NS, FOAF_NS;
+
+=head1 DESCRIPTION
+
+This module exports constants for well-known RDF, Linked Data, and Semantic
+Web namespaces.
+
+=cut
+
+const RDF_NS := "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+const RDFS_NS := "http://www.w3.org/2000/01/rdf-schema#";
+const OWL_NS := "http://www.w3.org/2002/07/owl#";
+const XSD_NS := "http://www.w3.org/2001/XMLSchema#";
+const XML_NS := "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NS := "http://www.w3.org/2000/xmlns/";
+
+const SKOS_NS := "http://www.w3.org/2004/02/skos/core#";
+const SKOSXL_NS := "http://www.w3.org/2008/05/skos-xl#";
+const FOAF_NS := "http://xmlns.com/foaf/0.1/";
+const DCTERMS_NS := "http://purl.org/dc/terms/";
+const DC_NS := "http://purl.org/dc/elements/1.1/";
+const DOAP_NS := "http://usefulinc.com/ns/doap#";
+const VOID_NS := "http://rdfs.org/ns/void#";
+const VANN_NS := "http://purl.org/vocab/vann/";
+const CC_NS := "http://creativecommons.org/ns#";
+const SIOC_NS := "http://rdfs.org/sioc/ns#";
+const BIBO_NS := "http://purl.org/ontology/bibo/";
+const BIO_NS := "http://purl.org/vocab/bio/0.1/";
+const REL_NS := "http://purl.org/vocab/relationship/";
+const REV_NS := "http://purl.org/stuff/rev#";
+const GR_NS := "http://purl.org/goodrelations/v1#";
+
+const SCHEMA_NS := "https://schema.org/";
+const PROV_NS := "http://www.w3.org/ns/prov#";
+const DCAT_NS := "http://www.w3.org/ns/dcat#";
+const LDP_NS := "http://www.w3.org/ns/ldp#";
+const OA_NS := "http://www.w3.org/ns/oa#";
+const ORG_NS := "http://www.w3.org/ns/org#";
+const QB_NS := "http://purl.org/linked-data/cube#";
+const TIME_NS := "http://www.w3.org/2006/time#";
+const ACTIVITYSTREAMS_NS := "https://www.w3.org/ns/activitystreams#";
+const AS_NS := ACTIVITYSTREAMS_NS;
+const HYDRA_NS := "http://www.w3.org/ns/hydra/core#";
+const SHACL_NS := "http://www.w3.org/ns/shacl#";
+const ODRL_NS := "http://www.w3.org/ns/odrl/2/";
+const CSVW_NS := "http://www.w3.org/ns/csvw#";
+const SSN_NS := "http://www.w3.org/ns/ssn/";
+const SOSA_NS := "http://www.w3.org/ns/sosa/";
+
+const VCARD_NS := "http://www.w3.org/2006/vcard/ns#";
+const GEO_NS := "http://www.w3.org/2003/01/geo/wgs84_pos#";
+const GEOSPARQL_NS := "http://www.opengis.net/ont/geosparql#";
+const EXIF_NS := "http://www.w3.org/2003/12/exif/ns#";
+const MA_NS := "http://www.w3.org/ns/ma-ont#";
+const EVENT_NS := "http://purl.org/NET/c4dm/event.owl#";
+const MO_NS := "http://purl.org/ontology/mo/";
+const CERT_NS := "http://www.w3.org/ns/auth/cert#";
+const ACL_NS := "http://www.w3.org/ns/auth/acl#";
+const HTTP_NS := "http://www.w3.org/2011/http#";
+const SPARQL_RESULTS_NS := "http://www.w3.org/2005/sparql-results#";

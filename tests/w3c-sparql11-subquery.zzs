@@ -1,0 +1,174 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, RdfXmlParser, TurtleParser, rdf_iri, rdf_quad,
+	sparql_query;
+from rdf/sparql/w3cresults import
+	sparql_w3c_graph_match_file,
+	sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/subquery");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 subquery manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _rdfxml_store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new RdfXmlParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _rdfxml_named_store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	let graph := rdf_iri("");
+	for ( let quad in ( new RdfXmlParser() ).parse_file(root.child(data_file)) ) {
+		store.add_quad(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph,
+		));
+	}
+	return store;
+}
+
+function _rdfxml_mixed_store ( String data_file, String graph_file ) {
+	let store := _rdfxml_store(data_file);
+	let graph := rdf_iri("");
+	for ( let quad in ( new RdfXmlParser() ).parse_file(root.child(graph_file)) ) {
+		store.add_quad(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph,
+		));
+	}
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _run_with_store ( RDFStore store, String query_file ) {
+	return sparql_query(
+		store,
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+function _matches_with_store ( RDFStore store, String query_file,
+	String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run_with_store( store, query_file ),
+		root.child(result_file),
+	);
+}
+
+ok(
+	_matches_with_store( _rdfxml_named_store("sq01.rdf"), "sq01.rq",
+		"sq01.srx" ),
+	"W3C subquery sq01 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_named_store("sq01.rdf"), "sq02.rq",
+		"sq02.srx" ),
+	"W3C subquery sq02 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_named_store("sq01.rdf"), "sq03.rq",
+		"sq03.srx" ),
+	"W3C subquery sq03 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_mixed_store( "sq04.rdf", "sq01.rdf" ),
+		"sq04.rq", "sq04.srx" ),
+	"W3C subquery sq04 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_named_store("sq05.rdf"), "sq05.rq",
+		"sq05.srx" ),
+	"W3C subquery sq05 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_store("sq05.rdf"), "sq06.rq", "sq06.srx" ),
+	"W3C subquery sq06 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_named_store("sq05.rdf"), "sq07.rq",
+		"sq07.srx" ),
+	"W3C subquery sq07 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_store("sq08.rdf"), "sq08.rq", "sq08.srx" ),
+	"W3C subquery sq08 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_store("sq09.rdf"), "sq09.rq", "sq09.srx" ),
+	"W3C subquery sq09 exact results",
+);
+ok(
+	_matches_with_store( _rdfxml_store("sq10.rdf"), "sq10.rq", "sq10.srx" ),
+	"W3C subquery sq10 exact results",
+);
+
+let sq11 := _run( "sq11.ttl", "sq11.rq" );
+is( sq11{results}.length(), 6, "W3C subquery sq11 row count" );
+is(
+	sq11{results}[0]{L}.get_value(),
+	"Ice Cream",
+	"W3C subquery sq11 ordered first label",
+);
+ok(
+	_matches( "sq11.ttl", "sq11.rq", "sq11.srx" ),
+	"W3C subquery sq11 exact results",
+);
+
+let sq12 := _run( "sq12.ttl", "sq12.rq" );
+is( sq12{quads}.length(), 1, "W3C subquery sq12 CONSTRUCT row count" );
+ok(
+	sparql_w3c_graph_match_file( sq12, root.child("sq12_out.ttl") ),
+	"W3C subquery sq12 CONSTRUCT exact graph",
+);
+
+let sq13 := _run( "sq13.ttl", "sq13.rq" );
+is( sq13{results}.length(), 16, "W3C subquery sq13 row count" );
+ok(
+	_matches( "sq13.ttl", "sq13.rq", "sq13.srx" ),
+	"W3C subquery sq13 exact results",
+);
+
+let sq14 := _run( "sq14.ttl", "sq14.rq" );
+is( sq14{quads}.length(), 11, "W3C subquery sq14 CONSTRUCT graph size" );
+ok(
+	sparql_w3c_graph_match_file( sq14, root.child("sq14-out.ttl") ),
+	"W3C subquery sq14 CONSTRUCT exact graph",
+);
+
+done_testing();

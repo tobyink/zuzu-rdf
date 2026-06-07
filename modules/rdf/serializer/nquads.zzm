@@ -1,0 +1,27 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/nquads - N-Quads serializer.
+
+=cut
+
+from rdf/serializer/ntriples import _nt_term;
+from rdf/term import RDFDefaultGraph;
+from std/string import join;
+
+class NQuadsSerializer {
+	method serialize ( Array quads ) {
+		let lines := [];
+		for ( let quad in quads ) {
+			let line := _nt_term(quad.get_subject()) _ " " _
+				_nt_term(quad.get_predicate()) _ " " _
+				_nt_term(quad.get_object());
+			if ( not( quad.get_graph() instanceof RDFDefaultGraph ) ) {
+				line _= " " _ _nt_term(quad.get_graph());
+			}
+			lines.push(line _ " .");
+		}
+		return join( "\n", lines ) _ ( lines.length() > 0 ? "\n" : "" );
+	}
+}

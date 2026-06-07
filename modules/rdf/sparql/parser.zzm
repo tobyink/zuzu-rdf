@@ -1,0 +1,822 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/parser - SPARQL 1.1 syntax parser.
+
+=cut
+
+from rdf/term import SPARQLError;
+from rdf/sparql/lexer import sparql_lex;
+from std/string import substr;
+
+function _sparql_parse_error ( String message, token ) {
+	throw new SPARQLError(
+		message: "SPARQL syntax: " _ message _ " at " _
+			token{line} _ ":" _ token{column},
+	);
+}
+
+function _sparql_var_name ( token ) {
+	return substr( token{value}, 1 );
+}
+
+function _sparql_is_var ( token ) {
+	return token{kind} eq "var";
+}
+
+function _sparql_is_termish ( token ) {
+	return token{kind} eq "var" or token{kind} eq "iri" or
+		token{kind} eq "string" or token{kind} eq "bnode" or
+		token{kind} eq "word";
+}
+
+function _sparql_is_keyword_token ( token, String value ) {
+	return uc(token{value}) eq value;
+}
+
+function _sparql_is_aggregate ( String value ) {
+	let u := uc(value);
+	return u eq "COUNT" or u eq "SUM" or u eq "AVG" or u eq "MIN" or
+		u eq "MAX" or u eq "SAMPLE" or u eq "GROUP_CONCAT";
+}
+
+function _sparql_array_has ( Array array, value ) {
+	for ( let item in array ) {
+		return true if item eq value;
+	}
+	return false;
+}
+
+function _sparql_merge_unique ( Array left, Array right ) {
+	let out := [];
+	for ( let item in left ) {
+		out.push(item) unless _sparql_array_has(out, item);
+	}
+	for ( let item in right ) {
+		out.push(item) unless _sparql_array_has(out, item);
+	}
+	return out;
+}
+
+class SparqlSyntaxParser {
+	let Array tokens := [];
+	let Number pos := 0;
+
+	method _peek () {
+		return tokens[pos];
+	}
+
+	method _peek_value () {
+		return self._peek(){value};
+	}
+
+	method _peek_at ( Number offset ) {
+		return tokens[pos + offset];
+	}
+
+	method _eof () {
+		return self._peek(){kind} eq "eof";
+	}
+
+	method _advance () {
+		let token := self._peek();
+		pos++;
+		return token;
+	}
+
+	method _accept ( String value ) {
+		if ( self._peek_value() eq value ) {
+			return self._advance();
+		}
+		return null;
+	}
+
+	method _accept_keyword ( String value ) {
+		if ( _sparql_is_keyword_token( self._peek(), value ) ) {
+			return self._advance();
+		}
+		return null;
+	}
+
+	method _expect ( String value ) {
+		let token := self._peek();
+		return self._advance() if token{value} eq value;
+		_sparql_parse_error( "expected " _ value, token );
+	}
+
+	method _expect_keyword ( String value ) {
+		let token := self._peek();
+		return self._advance() if _sparql_is_keyword_token( token, value );
+		_sparql_parse_error( "expected " _ value, token );
+	}
+
+	method _validate_prefix_name ( token ) {
+		_sparql_parse_error( "invalid PREFIX", token )
+			unless token{value} ~ /^([A-Za-z][A-Za-z0-9_-]*|):$/;
+	}
+
+	method _parse_prologue () {
+		let prefixes := {};
+		let base := null;
+		while ( true ) {
+			if ( self._accept_keyword("BASE") != null ) {
+				let iri := self._advance();
+				_sparql_parse_error( "BASE expects IRI", iri )
+					unless iri{kind} eq "iri";
+				base := iri{value};
+				next;
+			}
+			if ( self._accept_keyword("PREFIX") != null ) {
+				let prefix := self._advance();
+				self._validate_prefix_name(prefix);
+				let iri := self._advance();
+				_sparql_parse_error( "PREFIX expects IRI", iri )
+					unless iri{kind} eq "iri";
+				prefixes.set(substr( prefix{value}, 0, length prefix{value} - 1 ), iri{value});
+				next;
+			}
+			last;
+		}
+		return { prefixes: prefixes, base: base };
+	}
+
+	method _parse_projection_expr () {
+		let depth := 1;
+		let saw_as := false;
+		let alias := null;
+		let aggregate := "";
+		let aggregate_depth := -1;
+		let aggregate_commas := 0;
+		let previous := null;
+		while ( not self._eof() ) {
+			let token := self._advance();
+			if ( token{value} eq "(" ) {
+				if ( previous != null and previous{kind} eq "word" and
+					_sparql_is_aggregate(previous{value}) and aggregate eq ""
+				) {
+					aggregate := uc(previous{value});
+					aggregate_depth := depth + 1;
+				}
+				depth++;
+			}
+			else if ( token{value} eq ")" ) {
+				depth--;
+				last if depth == 0;
+			}
+			else if ( token{value} eq "," and depth == aggregate_depth ) {
+				aggregate_commas++;
+			}
+			else if ( _sparql_is_keyword_token( token, "AS" ) and depth == 1 ) {
+				saw_as := true;
+				let target := self._advance();
+				_sparql_parse_error( "projection AS expects variable", target )
+					unless _sparql_is_var(target);
+				alias := _sparql_var_name(target);
+			}
+			previous := token;
+		}
+		_sparql_parse_error( "expression projection requires AS", self._peek() )
+			unless saw_as;
+		_sparql_parse_error( "aggregate arity", self._peek() )
+			if aggregate ne "" and aggregate ne "GROUP_CONCAT" and aggregate_commas > 0;
+		return { kind: "expr", alias: alias, aggregate: aggregate };
+	}
+
+	method _parse_select_head () {
+		self._expect_keyword("SELECT");
+		let vars := [];
+		let aliases := [];
+		let star := false;
+		let distinct := false;
+		if ( self._accept_keyword("DISTINCT") != null or
+			self._accept_keyword("REDUCED") != null
+		) {
+			distinct := true;
+		}
+		while ( not self._eof() ) {
+			last if self._peek_value() eq "{" or
+				_sparql_is_keyword_token( self._peek(), "WHERE" ) or
+				_sparql_is_keyword_token( self._peek(), "FROM" );
+			if ( self._accept("*") != null ) {
+				star := true;
+				next;
+			}
+			if ( self._peek(){kind} eq "var" ) {
+				vars.push(_sparql_var_name(self._advance()));
+				next;
+			}
+			if ( self._peek_value() eq "(" ) {
+				self._advance();
+				let expr := self._parse_projection_expr();
+				_sparql_parse_error( "duplicate projection variable", self._peek() )
+					if _sparql_array_has(aliases, expr{alias}) or
+					_sparql_array_has(vars, expr{alias});
+				aliases.push(expr{alias});
+				next;
+			}
+			if ( self._peek(){kind} eq "word" and
+				_sparql_is_aggregate(self._peek_value())
+			) {
+				_sparql_parse_error(
+					"aggregate projection requires AS",
+					self._peek(),
+				);
+			}
+			_sparql_parse_error( "invalid SELECT projection", self._peek() );
+		}
+		return {
+			vars: vars,
+			aliases: aliases,
+			star: star,
+			distinct: distinct,
+		};
+	}
+
+	method _skip_dataset_clauses () {
+		while ( self._accept_keyword("FROM") != null ) {
+			self._accept_keyword("NAMED");
+			let token := self._advance();
+			_sparql_parse_error( "FROM expects graph IRI", token )
+				unless token{kind} eq "iri" or token{kind} eq "word";
+		}
+	}
+
+	method _parse_values () {
+		self._expect_keyword("VALUES");
+		let vars := [];
+		if ( self._peek(){kind} eq "var" ) {
+			vars.push(_sparql_var_name(self._advance()));
+		}
+		else {
+			self._expect("(");
+			while ( self._peek_value() ne ")" ) {
+				let token := self._advance();
+				_sparql_parse_error( "VALUES variable expected", token )
+					unless _sparql_is_var(token);
+				vars.push(_sparql_var_name(token));
+			}
+			self._expect(")");
+		}
+		self._expect("{");
+		while ( self._peek_value() ne "}" ) {
+			if ( self._peek_value() eq "(" ) {
+				self._advance();
+				let count := 0;
+				while ( self._peek_value() ne ")" ) {
+					_sparql_parse_error( "VALUES value expected", self._peek() )
+						unless _sparql_is_termish(self._peek()) or
+						_sparql_is_keyword_token( self._peek(), "UNDEF" );
+					self._advance();
+					count++;
+				}
+				self._expect(")");
+				_sparql_parse_error( "VALUES row width mismatch", self._peek() )
+					if count != vars.length();
+				next;
+			}
+			_sparql_parse_error( "VALUES value expected", self._peek() )
+				unless vars.length() == 1 and
+				( _sparql_is_termish(self._peek()) or
+					_sparql_is_keyword_token( self._peek(), "UNDEF" ) );
+			self._advance();
+		}
+		self._expect("}");
+		return { vars: vars };
+	}
+
+	method _skip_parenthesised () {
+		self._expect("(");
+		let depth := 1;
+		while ( not self._eof() and depth > 0 ) {
+			let token := self._advance();
+			depth++ if token{value} eq "(";
+			depth-- if token{value} eq ")";
+		}
+		_sparql_parse_error( "unbalanced expression", self._peek() )
+			if depth != 0;
+	}
+
+	method _skip_until_group_or_modifier () {
+		while ( not self._eof() and self._peek_value() ne "{" ) {
+			last if _sparql_is_keyword_token( self._peek(), "GROUP" ) or
+				_sparql_is_keyword_token( self._peek(), "HAVING" ) or
+				_sparql_is_keyword_token( self._peek(), "ORDER" ) or
+				_sparql_is_keyword_token( self._peek(), "LIMIT" ) or
+				_sparql_is_keyword_token( self._peek(), "OFFSET" ) or
+				_sparql_is_keyword_token( self._peek(), "VALUES" );
+			self._advance();
+		}
+	}
+
+	method _parse_bind ( Array in_scope ) {
+		self._expect_keyword("BIND");
+		self._expect("(");
+		let depth := 1;
+		let alias := null;
+		while ( not self._eof() and depth > 0 ) {
+			let token := self._advance();
+			if ( token{value} eq "(" ) {
+				depth++;
+			}
+			else if ( token{value} eq ")" ) {
+				depth--;
+			}
+			else if ( _sparql_is_keyword_token( token, "AS" ) and depth == 1 ) {
+				let target := self._advance();
+				_sparql_parse_error( "BIND AS expects variable", target )
+					unless _sparql_is_var(target);
+				alias := _sparql_var_name(target);
+			}
+		}
+		_sparql_parse_error( "BIND target expected", self._peek() )
+			if alias == null;
+		_sparql_parse_error( "BIND target already in scope", self._peek() )
+			if _sparql_array_has(in_scope, alias);
+		return { vars: [ alias ], kind: "bind" };
+	}
+
+	method _parse_subquery () {
+		return self._parse_query(true);
+	}
+
+	method _parse_group () {
+		self._expect("{");
+		let vars := [];
+		let previous_group := false;
+		let statement_terms := 0;
+		let bgp_only := true;
+		while ( not self._eof() and self._peek_value() ne "}" ) {
+			if ( self._peek_value() eq "." ) {
+				_sparql_parse_error(
+					"basic graph pattern expected",
+					self._peek(),
+				) if statement_terms > 0 and statement_terms < 3;
+				statement_terms := 0;
+				self._advance();
+				previous_group := false;
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "SELECT" ) ) {
+				bgp_only := false;
+				_sparql_parse_error( "subquery requires group", self._peek() )
+					if previous_group or statement_terms > 0 or vars.length() > 0;
+				let sub := self._parse_subquery();
+				for ( let name in sub{visible_vars} ) {
+					vars.push(name) unless _sparql_array_has(vars, name);
+				}
+				previous_group := true;
+				next;
+			}
+			if ( self._peek_value() eq "{" ) {
+				bgp_only := false;
+				let child := self._parse_group();
+				for ( let name in child{vars} ) {
+					vars.push(name) unless _sparql_array_has(vars, name);
+				}
+				previous_group := true;
+				next;
+			}
+			if ( self._accept_keyword("UNION") != null ) {
+				bgp_only := false;
+				_sparql_parse_error( "UNION requires grouped operands", self._peek() )
+					unless previous_group and self._peek_value() eq "{";
+				let child := self._parse_group();
+				for ( let name in child{vars} ) {
+					vars.push(name) unless _sparql_array_has(vars, name);
+				}
+				previous_group := true;
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "OPTIONAL" ) or
+				_sparql_is_keyword_token( self._peek(), "GRAPH" ) or
+				_sparql_is_keyword_token( self._peek(), "MINUS" ) or
+				_sparql_is_keyword_token( self._peek(), "SERVICE" )
+			) {
+				bgp_only := false;
+				self._advance();
+				self._advance() if self._peek_value() ne "{";
+				if ( self._peek_value() eq "{" ) {
+					let child := self._parse_group();
+					for ( let name in child{vars} ) {
+						vars.push(name) unless _sparql_array_has(vars, name);
+					}
+				}
+				previous_group := true;
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "FILTER" ) ) {
+				bgp_only := false;
+				self._advance();
+				if ( self._accept_keyword("NOT") != null ) {
+					self._expect_keyword("EXISTS");
+					self._parse_group();
+				}
+				else if ( self._accept_keyword("EXISTS") != null ) {
+					self._parse_group();
+				}
+				else {
+					if ( self._peek_value() eq "(" ) {
+						self._skip_parenthesised();
+					}
+					else {
+						self._advance();
+						self._skip_parenthesised()
+							if self._peek_value() eq "(";
+					}
+				}
+				previous_group := false;
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "BIND" ) ) {
+				bgp_only := false;
+				let bind := self._parse_bind(vars);
+				for ( let name in bind{vars} ) {
+					vars.push(name) unless _sparql_array_has(vars, name);
+				}
+				previous_group := false;
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "VALUES" ) ) {
+				bgp_only := false;
+				self._parse_values();
+				previous_group := false;
+				next;
+			}
+			if ( _sparql_is_var(self._peek()) ) {
+				let name := _sparql_var_name(self._advance());
+				vars.push(name) unless _sparql_array_has(vars, name);
+				statement_terms++;
+				previous_group := false;
+				next;
+			}
+			if ( _sparql_is_termish(self._peek()) ) {
+				statement_terms++;
+			}
+			self._advance();
+			previous_group := false;
+		}
+		self._expect("}");
+		return { vars: vars, bgp_only: bgp_only };
+	}
+
+	method _parse_group_by ( Boolean stop_at_group_end := false ) {
+		let vars := [];
+		if ( self._accept_keyword("GROUP") != null ) {
+			self._expect_keyword("BY");
+			while ( not self._eof() ) {
+				last if stop_at_group_end and self._peek_value() eq "}";
+				last if _sparql_is_keyword_token( self._peek(), "HAVING" ) or
+					_sparql_is_keyword_token( self._peek(), "ORDER" ) or
+					_sparql_is_keyword_token( self._peek(), "LIMIT" ) or
+					_sparql_is_keyword_token( self._peek(), "OFFSET" ) or
+					_sparql_is_keyword_token( self._peek(), "VALUES" );
+				if ( _sparql_is_var(self._peek()) ) {
+					vars.push(_sparql_var_name(self._advance()));
+					next;
+				}
+				if ( self._peek_value() eq "(" ) {
+					self._skip_parenthesised();
+					next;
+				}
+				self._advance();
+			}
+		}
+		return vars;
+	}
+
+	method _parse_solution_modifiers ( Boolean stop_at_group_end := false ) {
+		let group_vars := self._parse_group_by(stop_at_group_end);
+		while ( not self._eof() ) {
+			last if stop_at_group_end and self._peek_value() eq "}";
+			if ( self._accept_keyword("HAVING") != null ) {
+				while ( self._peek_value() eq "(" ) {
+					self._skip_parenthesised();
+				}
+				next;
+			}
+			if ( self._accept_keyword("ORDER") != null ) {
+				self._expect_keyword("BY");
+				while ( not self._eof() and
+					not _sparql_is_keyword_token( self._peek(), "LIMIT" ) and
+					not _sparql_is_keyword_token( self._peek(), "OFFSET" ) and
+					not _sparql_is_keyword_token( self._peek(), "VALUES" )
+				) {
+					if ( self._peek_value() eq "(" ) {
+						self._skip_parenthesised();
+					}
+					else {
+						self._advance();
+					}
+				}
+				next;
+			}
+			if ( self._accept_keyword("LIMIT") != null or
+				self._accept_keyword("OFFSET") != null
+			) {
+				self._advance();
+				next;
+			}
+			if ( _sparql_is_keyword_token( self._peek(), "VALUES" ) ) {
+				self._parse_values();
+				next;
+			}
+			_sparql_parse_error( "unexpected token after query", self._peek() );
+		}
+		return { group_vars: group_vars };
+	}
+
+	method _visible_select_vars ( head ) {
+		return head{star}
+			? [ "*" ]
+			: _sparql_merge_unique(head{vars}, head{aliases});
+	}
+
+	method _validate_select ( head, group, modifiers ) {
+		if ( modifiers{group_vars}.length() > 0 ) {
+			_sparql_parse_error( "SELECT * cannot be grouped", self._peek() )
+				if head{star};
+			for ( let name in head{vars} ) {
+				_sparql_parse_error(
+					"projected variable not grouped",
+					self._peek(),
+				) unless _sparql_array_has(modifiers{group_vars}, name);
+			}
+		}
+		for ( let alias in head{aliases} ) {
+			_sparql_parse_error( "SELECT target already in scope", self._peek() )
+				if _sparql_array_has(group{vars}, alias);
+		}
+	}
+
+	method _parse_query ( subquery := false ) {
+		let head := self._parse_select_head();
+		self._skip_dataset_clauses();
+		self._accept_keyword("WHERE");
+		let group := self._parse_group();
+		let modifiers := self._parse_solution_modifiers(subquery);
+		self._validate_select( head, group, modifiers );
+		return {
+			type: "query",
+			syntax: "sparql11",
+			kind: "select",
+			select: head,
+			group: group,
+			modifiers: modifiers,
+			visible_vars: self._visible_select_vars(head),
+		};
+	}
+
+	method _parse_ask () {
+		self._expect_keyword("ASK");
+		self._skip_dataset_clauses();
+		self._accept_keyword("WHERE");
+		let group := self._parse_group();
+		let modifiers := self._parse_solution_modifiers();
+		return {
+			type: "query",
+			syntax: "sparql11",
+			kind: "ask",
+			group: group,
+			modifiers: modifiers,
+			visible_vars: [],
+		};
+	}
+
+	method _parse_construct () {
+		self._expect_keyword("CONSTRUCT");
+		let template := null;
+		let implicit_template := false;
+		if ( self._peek_value() eq "{" ) {
+			template := self._parse_group();
+		}
+		else {
+			implicit_template := true;
+		}
+		self._skip_dataset_clauses();
+		self._accept_keyword("WHERE");
+		let group := self._parse_group();
+		_sparql_parse_error(
+			"CONSTRUCT WHERE requires a basic graph pattern",
+			self._peek(),
+		) if implicit_template and not group{bgp_only};
+		let modifiers := self._parse_solution_modifiers();
+		return {
+			type: "query",
+			syntax: "sparql11",
+			kind: "construct",
+			template: template,
+			group: group,
+			modifiers: modifiers,
+			visible_vars: [],
+		};
+	}
+
+	method _parse_describe () {
+		self._expect_keyword("DESCRIBE");
+		self._skip_until_group_or_modifier();
+		if ( self._peek_value() eq "{" ) {
+			self._parse_group();
+		}
+		let modifiers := self._parse_solution_modifiers();
+		return {
+			type: "query",
+			syntax: "sparql11",
+			kind: "describe",
+			modifiers: modifiers,
+			visible_vars: [],
+		};
+	}
+
+	method _update_operation_name ( token ) {
+		let u := uc(token{value});
+		return lc(u) if u eq "LOAD" or u eq "CLEAR" or u eq "DROP" or
+			u eq "ADD" or u eq "MOVE" or u eq "COPY" or u eq "CREATE" or
+			u eq "INSERT" or u eq "DELETE" or u eq "WITH";
+		_sparql_parse_error( "update operation expected", token );
+	}
+
+	method _is_update_start ( token ) {
+		let u := uc(token{value});
+		return u eq "LOAD" or u eq "CLEAR" or u eq "DROP" or
+			u eq "ADD" or u eq "MOVE" or u eq "COPY" or u eq "CREATE" or
+			u eq "INSERT" or u eq "DELETE" or u eq "WITH";
+	}
+
+	method _validate_update_operation ( String operation, Array body, token ) {
+		if ( operation eq "load" ) {
+			_sparql_parse_error( "LOAD expects IRI", token )
+				unless body.length() > 0 and body[0]{kind} eq "iri";
+		}
+		if ( operation eq "create" ) {
+			for ( let item in body ) {
+				_sparql_parse_error( "invalid keyword", item )
+					if _sparql_is_keyword_token( item, "DEAFULT" );
+			}
+		}
+		if ( operation eq "insert" and body.length() > 0 and
+			_sparql_is_keyword_token( body[0], "WHERE" )
+		) {
+			_sparql_parse_error( "INSERT WHERE needs template", body[0] );
+		}
+		let in_data := false;
+		let in_delete_template := operation eq "delete";
+		let graph_depth := 0;
+		let depth := 0;
+		let i := 0;
+		while ( i < body.length() ) {
+			let item := body[i];
+			if ( _sparql_is_keyword_token( item, "DATA" ) ) {
+				in_data := true;
+			}
+			if ( item{value} eq "{" ) {
+				depth++;
+			}
+			else if ( item{value} eq "}" ) {
+				depth--;
+				graph_depth := 0 if graph_depth > depth;
+			}
+			if ( _sparql_is_keyword_token( item, "WHERE" ) ) {
+				in_delete_template := false;
+			}
+			if ( _sparql_is_keyword_token( item, "GRAPH" ) ) {
+				_sparql_parse_error( "nested GRAPH not allowed in DATA", item )
+					if in_data and graph_depth > 0;
+				graph_depth := depth + 1;
+				let graph_name := body[i + 1];
+				_sparql_parse_error(
+					"variables not allowed in INSERT DATA graph name",
+					graph_name,
+				) if in_data and operation eq "insert" and
+					graph_name{kind} eq "var";
+			}
+			if ( item{kind} eq "var" and operation eq "delete" and in_data ) {
+				_sparql_parse_error(
+					"variables not allowed in DELETE DATA",
+					item,
+				);
+			}
+			if ( item{kind} eq "bnode" and operation eq "delete" ) {
+				_sparql_parse_error(
+					in_data
+						? "blank nodes not allowed in DELETE DATA"
+						: in_delete_template
+							? "blank nodes not allowed in DELETE template"
+							: "blank nodes not allowed in DELETE WHERE",
+					item,
+				);
+			}
+			if ( item{value} eq "[" and operation eq "delete" and in_delete_template ) {
+				_sparql_parse_error( "blank nodes not allowed in DELETE template", item );
+			}
+			i++;
+		}
+	}
+
+	method _parse_update_operation () {
+		let start := self._advance();
+		let operation := self._update_operation_name(start);
+		let body := [];
+		let bnodes := [];
+		let depth_brace := 0;
+		let depth_paren := 0;
+		let saw_token := false;
+		while ( not self._eof() ) {
+			last if depth_brace == 0 and depth_paren == 0 and
+				self._peek_value() eq ";";
+			let token := self._advance();
+			saw_token := true;
+			if ( ( operation eq "create" or operation eq "load" or
+					operation eq "clear" or operation eq "drop" or
+					operation eq "add" or operation eq "move" or
+					operation eq "copy" ) and
+				depth_brace == 0 and depth_paren == 0 and
+				self._is_update_start(token)
+			) {
+				_sparql_parse_error(
+					"update operations need semicolon separator",
+					token,
+				);
+			}
+			body.push(token);
+			bnodes.push(token{value}) if token{kind} eq "bnode";
+			depth_brace++ if token{value} eq "{";
+			depth_brace-- if token{value} eq "}";
+			depth_paren++ if token{value} eq "(";
+			depth_paren-- if token{value} eq ")";
+			_sparql_parse_error( "unbalanced update", token )
+				if depth_brace < 0 or depth_paren < 0;
+		}
+		_sparql_parse_error( "empty update operation", start )
+			if operation ne "clear" and operation ne "drop" and not saw_token;
+		let canonical := operation eq "with" ? "modify" : operation;
+		self._validate_update_operation(canonical, body, start);
+		return { operation: canonical, bnodes: bnodes };
+	}
+
+	method _parse_update () {
+		let operations := [];
+		let seen_bnodes := {};
+		while ( not self._eof() ) {
+			if ( self._accept(";") != null ) {
+				_sparql_parse_error( "empty update operation", self._peek() );
+			}
+			let op := self._parse_update_operation();
+			let op_bnodes := {};
+			for ( let label in op{bnodes} ) {
+				_sparql_parse_error(
+					"blank node labels are scoped to one operation",
+					self._peek(),
+				) if seen_bnodes.exists(label);
+				op_bnodes.set( label, true );
+			}
+			for ( let label in op_bnodes.keys() ) {
+				seen_bnodes.set( label, true );
+			}
+			operations.push(op{operation});
+			self._accept(";");
+		}
+		return {
+			type: "update",
+			syntax: "sparql11",
+			operations: operations,
+		};
+	}
+
+	method parse ( String source ) {
+		tokens := sparql_lex(source);
+		pos := 0;
+		let prologue := self._parse_prologue();
+		if ( self._accept_keyword("BINDINGS") != null ) {
+			_sparql_parse_error( "BINDINGS is obsolete", tokens[pos - 1] );
+		}
+		let token := self._peek();
+		if ( _sparql_is_keyword_token( token, "SELECT" ) ) {
+			let query := self._parse_query(false);
+			query{prologue} := prologue;
+			return query;
+		}
+		if ( _sparql_is_keyword_token( token, "ASK" ) ) {
+			let query := self._parse_ask();
+			query{prologue} := prologue;
+			return query;
+		}
+		if ( _sparql_is_keyword_token( token, "CONSTRUCT" ) ) {
+			let query := self._parse_construct();
+			query{prologue} := prologue;
+			return query;
+		}
+		if ( _sparql_is_keyword_token( token, "DESCRIBE" ) ) {
+			let query := self._parse_describe();
+			query{prologue} := prologue;
+			return query;
+		}
+		let update := self._parse_update();
+		update{prologue} := prologue;
+		return update;
+	}
+}
+
+function sparql_parse_ast ( String source ) {
+	return ( new SparqlSyntaxParser() ).parse(source);
+}

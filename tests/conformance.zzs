@@ -1,0 +1,65 @@
+from test/more import *;
+
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import
+	NQuadsParser,
+	NQuadsSerializer,
+	NTriplesParser,
+	NTriplesSerializer,
+	RDFStore,
+	RdfXmlParser,
+	TurtleParser,
+	rdf_iri,
+	sparql_query;
+from std/db import DB;
+from std/io import Path;
+
+let nt := ( new NTriplesParser() ).parse_file(
+	new Path("tests/w3c/rdf/basic.nt"),
+);
+is( nt.length(), 1, "W3C-style N-Triples fixture parses" );
+like(
+	( new NTriplesSerializer() ).serialize(nt),
+	/"nt"@en/,
+	"W3C-style N-Triples fixture serializes",
+);
+
+let nq := ( new NQuadsParser() ).parse_file(
+	new Path("tests/w3c/rdf/basic.nq"),
+);
+is( nq[0].get_graph().get_value(), "http://example.com/g", "W3C-style N-Quads fixture parses graph" );
+like(
+	( new NQuadsSerializer() ).serialize(nq),
+	/<http:\/\/example\.com\/g>/,
+	"W3C-style N-Quads fixture serializes graph",
+);
+
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+( new TurtleParser() ).parse_file(
+	new Path("tests/w3c/rdf/basic.ttl"),
+	into: store,
+);
+( new RdfXmlParser() ).parse_file(
+	new Path("tests/w3c/rdf/basic.rdf"),
+	into: store,
+);
+is(
+	store.find(
+		rdf_iri("http://example.com/s"),
+		rdf_iri("http://example.com/p"),
+	).length(),
+	2,
+	"W3C-style Turtle and RDF/XML fixtures load into one store",
+);
+
+let query := ( new Path("tests/w3c/sparql/select.rq") ).slurp_utf8();
+is(
+	sparql_query( store, query ){results}.length(),
+	2,
+	"W3C-style SPARQL fixture queries loaded graph",
+);
+
+done_testing();

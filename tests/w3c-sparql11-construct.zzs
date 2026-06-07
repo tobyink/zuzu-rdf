@@ -1,0 +1,166 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDF_NS, RDFStore, TurtleParser, rdf_iri, rdf_quad,
+	rdf_term_key, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_graph_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/construct");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 construct manifest not vendored");
+	done_testing();
+}
+
+function _store () {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child("data.ttl"), into: store);
+	return store;
+}
+
+function _named_store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	let graph := rdf_iri(data_file);
+	for ( let quad in ( new TurtleParser() ).parse_file(root.child(data_file)) ) {
+		store.add_quad(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph,
+		));
+	}
+	return store;
+}
+
+function _run ( String query_file ) {
+	return sparql_query(
+		_store(),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _run_with_store ( RDFStore store, String query_file ) {
+	return sparql_query(
+		store,
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _query ( String text ) {
+	return sparql_query( _store(), text );
+}
+
+is(
+	_run("constructwhere01.rq"){quads}.length(),
+	4,
+	"W3C CONSTRUCT WHERE basic template row count",
+);
+ok(
+	sparql_w3c_graph_match_file(
+		_run("constructwhere01.rq"),
+		root.child("constructwhere01result.ttl"),
+	),
+	"W3C CONSTRUCT WHERE basic template exact graph",
+);
+is(
+	_run("constructwhere02.rq"){quads}.length(),
+	2,
+	"W3C CONSTRUCT WHERE joins repeated object",
+);
+ok(
+	sparql_w3c_graph_match_file(
+		_run("constructwhere02.rq"),
+		root.child("constructwhere02result.ttl"),
+	),
+	"W3C CONSTRUCT WHERE join exact graph",
+);
+is(
+	_run("constructwhere03.rq"){quads}.length(),
+	2,
+	"W3C CONSTRUCT WHERE comma template row count",
+);
+ok(
+	sparql_w3c_graph_match_file(
+		_run("constructwhere03.rq"),
+		root.child("constructwhere03result.ttl"),
+	),
+	"W3C CONSTRUCT WHERE comma template exact graph",
+);
+ok(
+	sparql_w3c_graph_match_file(
+		_run_with_store( _named_store("data.ttl"), "constructwhere04.rq" ),
+		root.child("constructwhere04result.ttl"),
+	),
+	"W3C CONSTRUCT WHERE dataset exact graph",
+);
+let construct_filter_rejected := false;
+try {
+	_run("constructwhere05.rq");
+}
+catch {
+	construct_filter_rejected := true;
+}
+ok(
+	construct_filter_rejected,
+	"W3C CONSTRUCT WHERE rejects FILTER in implicit template",
+);
+let construct_graph_rejected := false;
+try {
+	_run("constructwhere06.rq");
+}
+catch {
+	construct_graph_rejected := true;
+}
+ok(
+	construct_graph_rejected,
+	"W3C CONSTRUCT WHERE rejects GRAPH in implicit template",
+);
+ok(
+	sparql_w3c_graph_match_file(
+		_run("constructlist.rq"),
+		root.child("constructlistresult.ttl"),
+	),
+	"W3C CONSTRUCT list exact graph",
+);
+
+let list_construct := _query("""
+PREFIX : <http://example.org/>
+CONSTRUCT { (?s ?o) :pair ?s . }
+WHERE { ?s :p ?o . }
+""");
+is(
+	list_construct{quads}.length(),
+	20,
+	"SPARQL CONSTRUCT expands RDF collection templates per solution",
+);
+is(
+	list_construct{quads}.grep(
+		fn q -> q.get_predicate().get_value() eq RDF_NS _ "first",
+	).length(),
+	8,
+	"SPARQL CONSTRUCT collection template creates rdf:first triples",
+);
+
+let blank_construct := _query("""
+PREFIX : <http://example.org/>
+CONSTRUCT { _:b :marker ?s . }
+WHERE { ?s :p ?o . }
+""");
+let blank_subjects := {};
+for ( let quad in blank_construct{quads} ) {
+	blank_subjects.set( rdf_term_key(quad.get_subject()), true );
+}
+is(
+	blank_subjects.keys().length(),
+	4,
+	"SPARQL CONSTRUCT blank node labels are fresh per solution",
+);
+
+done_testing();

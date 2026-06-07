@@ -1,0 +1,47 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf - RDF, Linked Data, and SPARQL facade.
+
+=head1 SYNOPSIS
+
+  from rdf import RDFStore, RdfXmlParser, TurtleParser, sparql_query;
+
+=head1 DESCRIPTION
+
+This facade re-exports the core RDF term model, parser classes,
+serializer classes, store class, and SPARQL query entrypoint.
+
+=cut
+
+from rdf/term import
+	DEFAULT_GRAPH_KEY,
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFError,
+	RDFIRI,
+	RDFLiteral,
+	RDFQuad,
+	RDFStoreError,
+	RDFSyntaxError,
+	RDF_NS,
+	SPARQLError,
+	XSD_NS,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_term_equals,
+	rdf_term_hash,
+	rdf_term_key,
+	rdf_term_kind;
+from rdf/store import RDFStore;
+from rdf/parser/ntriples import NTriplesParser;
+from rdf/parser/nquads import NQuadsParser;
+from rdf/parser/turtle import TurtleParser;
+from rdf/parser/rdfxml import RdfXmlParser;
+from rdf/serializer/ntriples import NTriplesSerializer;
+from rdf/serializer/nquads import NQuadsSerializer;
+from rdf/sparql import sparql_parse, sparql_parse_query, sparql_query;

@@ -1,0 +1,22 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/parser/ntriples - N-Triples parser.
+
+=cut
+
+from rdf/parser/common import RDFReader, _parser_result;
+
+class NTriplesParser {
+	method parse_string ( String text, ... PairList options ) {
+		return _parser_result(
+			( new RDFReader(source: text) ).read_all(false),
+			options,
+		);
+	}
+
+	method parse_file ( path, ... PairList options ) {
+		return self.parse_string(path.slurp_utf8(), ...options);
+	}
+}

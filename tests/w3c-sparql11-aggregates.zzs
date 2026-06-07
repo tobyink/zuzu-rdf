@@ -1,0 +1,286 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+from std/string import replace;
+
+let root := new Path("tests/w3c/sparql/sparql11/aggregates");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 aggregates manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _empty_store () {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _run_empty ( String query_file ) {
+	return sparql_query(
+		_empty_store(),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+function _matches_empty ( String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run_empty(query_file),
+		root.child(result_file),
+	);
+}
+
+let count_distinct := _run( "agg-numeric.ttl", "agg-count-distinct.rq" );
+is(
+	count_distinct{results}.length(),
+	5,
+	"W3C aggregates COUNT DISTINCT creates grouped rows",
+);
+let count_by_subject := {};
+for ( let row in count_distinct{results} ) {
+	count_by_subject.set( row{s}.get_value(), row{count}.get_value() );
+}
+is(
+	count_by_subject{"http://www.example.org/ints"},
+	"3",
+	"W3C aggregates COUNT DISTINCT counts integer values",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-count-distinct.rq",
+		"agg-count-distinct.srx",
+	),
+	"W3C aggregates COUNT DISTINCT exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-count-rows-distinct.rq",
+		"agg-count-rows-distinct.srx",
+	),
+	"W3C aggregates COUNT DISTINCT * exact results",
+);
+
+let agg01 := _run( "agg01.ttl", "agg01.rq" );
+is( agg01{results}.length(), 1, "W3C aggregates agg01 row count" );
+is(
+	agg01{results}[0]{C}.get_value(),
+	"5",
+	"W3C aggregates agg01 counts compact object list",
+);
+for ( let item in [
+	[ "agg01.ttl", "agg01.rq", "agg01.srx" ],
+	[ "agg01.ttl", "agg02.rq", "agg02.srx" ],
+	[ "agg01.ttl", "agg03.rq", "agg03.srx" ],
+	[ "agg01.ttl", "agg04.rq", "agg04.srx" ],
+	[ "agg01.ttl", "agg05.rq", "agg05.srx" ],
+	[ "agg01.ttl", "agg06.rq", "agg06.srx" ],
+	[ "agg01.ttl", "agg07.rq", "agg07.srx" ],
+	[ "agg08.ttl", "agg08b.rq", "agg08b.srx" ],
+] ) {
+	ok(
+		_matches( item[0], item[1], item[2] ),
+		"W3C aggregates " _ item[1] _ " exact results",
+	);
+}
+
+let sum01 := _run( "agg-numeric.ttl", "agg-sum-01.rq" );
+is( sum01{results}.length(), 1, "W3C aggregates SUM row count" );
+like( sum01{results}[0]{sum}.get_value(), /^11\.1/, "W3C aggregates SUM value" );
+ok(
+	_matches( "agg-numeric.ttl", "agg-sum-01.rq", "agg-sum-01.srx" ),
+	"W3C aggregates SUM exact results",
+);
+ok(
+	_matches( "agg-numeric2.ttl", "agg-sum-02.rq", "agg-sum-02.srx" ),
+	"W3C aggregates grouped SUM exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-sum-distinct.rq",
+		"agg-sum-distinct.srx",
+	),
+	"W3C aggregates SUM DISTINCT exact results",
+);
+
+let avg01 := _run( "agg-numeric.ttl", "agg-avg-01.rq" );
+is( avg01{results}.length(), 1, "W3C aggregates AVG row count" );
+like( avg01{results}[0]{avg}.get_value(), /^2\.2/, "W3C aggregates AVG value" );
+ok(
+	_matches( "agg-numeric.ttl", "agg-avg-01.rq", "agg-avg-01.srx" ),
+	"W3C aggregates AVG exact results",
+);
+ok(
+	_matches( "agg-numeric2.ttl", "agg-avg-02.rq", "agg-avg-02.srx" ),
+	"W3C aggregates grouped AVG exact results",
+);
+ok(
+	_matches_empty( "agg-avg-03.rq", "agg-avg-03.srx" ),
+	"W3C aggregates empty AVG exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-avg-distinct.rq",
+		"agg-avg-distinct.srx",
+	),
+	"W3C aggregates AVG DISTINCT exact results",
+);
+
+let min01 := _run( "agg-numeric.ttl", "agg-min-01.rq" );
+is( min01{results}.length(), 1, "W3C aggregates MIN row count" );
+is( min01{results}[0]{min}.get_value(), "1.0", "W3C aggregates MIN value" );
+ok(
+	_matches( "agg-numeric.ttl", "agg-min-01.rq", "agg-min-01.srx" ),
+	"W3C aggregates MIN exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-min-02.rq", "agg-min-02.srx" ),
+	"W3C aggregates grouped MIN exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-min-distinct.rq",
+		"agg-min-distinct.srx",
+	),
+	"W3C aggregates MIN DISTINCT exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-max-01.rq", "agg-max-01.srx" ),
+	"W3C aggregates MAX exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-max-02.rq", "agg-max-02.srx" ),
+	"W3C aggregates grouped MAX exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-max-distinct.rq",
+		"agg-max-distinct.srx",
+	),
+	"W3C aggregates MAX DISTINCT exact results",
+);
+
+let having03 := _run( "agg01.ttl", "agg03.rq" );
+is( having03{results}.length(), 1, "W3C aggregates HAVING count row count" );
+
+let groupconcat_store := _store("agg-groupconcat-1.ttl");
+for ( let query_name in [
+	"agg-groupconcat-1.rq",
+	"agg-groupconcat-2.rq",
+	"agg-groupconcat-3.rq",
+] ) {
+	ok(
+		sparql_w3c_results_match_file(
+			sparql_query(
+				groupconcat_store,
+				root.child(query_name).slurp_utf8(),
+			),
+			root.child(replace( query_name, ".rq", ".srx" )),
+		),
+		"W3C aggregates " _ query_name _ " exact results",
+	);
+}
+for ( let query_name in [
+	"agg-groupconcat-4.rq",
+	"agg-groupconcat-5.rq",
+	"agg-groupconcat-6.rq",
+	"agg-groupconcat-distinct.rq",
+] ) {
+	ok(
+		_matches_empty(
+			query_name,
+			replace( query_name, ".rq", ".srx" ),
+		),
+		"W3C aggregates " _ query_name _ " exact results",
+	);
+}
+
+ok(
+	_matches( "agg-numeric.ttl", "agg-sample-01.rq", "agg-sample-01.srx" ),
+	"W3C aggregates SAMPLE exact results",
+);
+ok(
+	_matches(
+		"agg-numeric-duplicates.ttl",
+		"agg-sample-distinct.rq",
+		"agg-sample-01.srx",
+	),
+	"W3C aggregates SAMPLE DISTINCT exact results",
+);
+ok(
+	_matches( "agg-err-01.ttl", "agg-err-01.rq", "agg-err-01.srx" ),
+	"W3C aggregates AVG error exact results",
+);
+ok(
+	_matches( "agg-err-02.ttl", "agg-err-02.rq", "agg-err-02.srx" ),
+	"W3C aggregates protected AVG error exact results",
+);
+ok(
+	_matches( "empty.ttl", "agg-empty-group-max-1.rq",
+		"agg-empty-group-max-1.srx" ),
+	"W3C aggregates empty grouped MAX exact results",
+);
+ok(
+	_matches( "empty.ttl", "agg-empty-group-max-2.rq",
+		"agg-empty-group-max-2.srx" ),
+	"W3C aggregates empty ungrouped MAX exact results",
+);
+ok(
+	_matches( "empty.ttl", "agg-empty-group-count-1.rq",
+		"agg-empty-group-count-1.srj" ),
+	"W3C aggregates empty grouped COUNT exact results",
+);
+ok(
+	_matches( "empty.ttl", "agg-empty-group-count-2.rq",
+		"agg-empty-group-count-2.srj" ),
+	"W3C aggregates empty ungrouped COUNT exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-multiple-having.rq",
+		"agg-multiple-having.srx" ),
+	"W3C aggregates multiple HAVING exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-group-fn.rq", "agg-group-fn.srx" ),
+	"W3C aggregates GROUP BY function exact results",
+);
+ok(
+	_matches( "agg-numeric.ttl", "agg-group-builtin.rq",
+		"agg-group-builtin.srx" ),
+	"W3C aggregates GROUP BY builtin exact results",
+);
+
+done_testing();

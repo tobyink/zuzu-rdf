@@ -1,0 +1,113 @@
+from test/more import *;
+
+from rdf/ns import
+	ACL_NS,
+	ACTIVITYSTREAMS_NS,
+	AS_NS,
+	BIBO_NS,
+	BIO_NS,
+	CC_NS,
+	CERT_NS,
+	CSVW_NS,
+	DC_NS,
+	DCAT_NS,
+	DCTERMS_NS,
+	DOAP_NS,
+	EVENT_NS,
+	EXIF_NS,
+	FOAF_NS,
+	GEO_NS,
+	GEOSPARQL_NS,
+	GR_NS,
+	HTTP_NS,
+	HYDRA_NS,
+	LDP_NS,
+	MA_NS,
+	MO_NS,
+	OA_NS,
+	ODRL_NS,
+	ORG_NS,
+	OWL_NS,
+	PROV_NS,
+	QB_NS,
+	RDF_NS,
+	RDFS_NS,
+	REL_NS,
+	REV_NS,
+	SCHEMA_NS,
+	SHACL_NS,
+	SIOC_NS,
+	SKOS_NS,
+	SKOSXL_NS,
+	SOSA_NS,
+	SPARQL_RESULTS_NS,
+	SSN_NS,
+	TIME_NS,
+	VANN_NS,
+	VCARD_NS,
+	VOID_NS,
+	XML_NS,
+	XMLNS_NS,
+	XSD_NS;
+
+is( RDF_NS, "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "RDF namespace" );
+is( RDFS_NS, "http://www.w3.org/2000/01/rdf-schema#", "RDFS namespace" );
+is( OWL_NS, "http://www.w3.org/2002/07/owl#", "OWL namespace" );
+is( XSD_NS, "http://www.w3.org/2001/XMLSchema#", "XSD namespace" );
+is( XML_NS, "http://www.w3.org/XML/1998/namespace", "XML namespace" );
+is( XMLNS_NS, "http://www.w3.org/2000/xmlns/", "XMLNS namespace" );
+
+is( SKOS_NS, "http://www.w3.org/2004/02/skos/core#", "SKOS namespace" );
+is( SKOSXL_NS, "http://www.w3.org/2008/05/skos-xl#", "SKOS-XL namespace" );
+is( FOAF_NS, "http://xmlns.com/foaf/0.1/", "FOAF namespace" );
+is( DCTERMS_NS, "http://purl.org/dc/terms/", "DCTERMS namespace" );
+is( DC_NS, "http://purl.org/dc/elements/1.1/", "DC namespace" );
+is( DOAP_NS, "http://usefulinc.com/ns/doap#", "DOAP namespace" );
+is( VOID_NS, "http://rdfs.org/ns/void#", "VoID namespace" );
+is( VANN_NS, "http://purl.org/vocab/vann/", "VANN namespace" );
+is( CC_NS, "http://creativecommons.org/ns#", "Creative Commons namespace" );
+is( SIOC_NS, "http://rdfs.org/sioc/ns#", "SIOC namespace" );
+is( BIBO_NS, "http://purl.org/ontology/bibo/", "BIBO namespace" );
+is( BIO_NS, "http://purl.org/vocab/bio/0.1/", "BIO namespace" );
+is( REL_NS, "http://purl.org/vocab/relationship/", "REL namespace" );
+is( REV_NS, "http://purl.org/stuff/rev#", "REV namespace" );
+is( GR_NS, "http://purl.org/goodrelations/v1#", "GoodRelations namespace" );
+
+is( SCHEMA_NS, "https://schema.org/", "Schema.org namespace" );
+is( PROV_NS, "http://www.w3.org/ns/prov#", "PROV namespace" );
+is( DCAT_NS, "http://www.w3.org/ns/dcat#", "DCAT namespace" );
+is( LDP_NS, "http://www.w3.org/ns/ldp#", "LDP namespace" );
+is( OA_NS, "http://www.w3.org/ns/oa#", "Web Annotation namespace" );
+is( ORG_NS, "http://www.w3.org/ns/org#", "ORG namespace" );
+is( QB_NS, "http://purl.org/linked-data/cube#", "Data Cube namespace" );
+is( TIME_NS, "http://www.w3.org/2006/time#", "Time namespace" );
+is(
+	ACTIVITYSTREAMS_NS,
+	"https://www.w3.org/ns/activitystreams#",
+	"ActivityStreams namespace",
+);
+is( AS_NS, ACTIVITYSTREAMS_NS, "AS namespace aliases ActivityStreams" );
+is( HYDRA_NS, "http://www.w3.org/ns/hydra/core#", "Hydra namespace" );
+is( SHACL_NS, "http://www.w3.org/ns/shacl#", "SHACL namespace" );
+is( ODRL_NS, "http://www.w3.org/ns/odrl/2/", "ODRL namespace" );
+is( CSVW_NS, "http://www.w3.org/ns/csvw#", "CSVW namespace" );
+is( SSN_NS, "http://www.w3.org/ns/ssn/", "SSN namespace" );
+is( SOSA_NS, "http://www.w3.org/ns/sosa/", "SOSA namespace" );
+
+is( VCARD_NS, "http://www.w3.org/2006/vcard/ns#", "vCard namespace" );
+is( GEO_NS, "http://www.w3.org/2003/01/geo/wgs84_pos#", "WGS84 Geo namespace" );
+is( GEOSPARQL_NS, "http://www.opengis.net/ont/geosparql#", "GeoSPARQL namespace" );
+is( EXIF_NS, "http://www.w3.org/2003/12/exif/ns#", "EXIF namespace" );
+is( MA_NS, "http://www.w3.org/ns/ma-ont#", "Media Annotation namespace" );
+is( EVENT_NS, "http://purl.org/NET/c4dm/event.owl#", "Event namespace" );
+is( MO_NS, "http://purl.org/ontology/mo/", "Music Ontology namespace" );
+is( CERT_NS, "http://www.w3.org/ns/auth/cert#", "CERT namespace" );
+is( ACL_NS, "http://www.w3.org/ns/auth/acl#", "ACL namespace" );
+is( HTTP_NS, "http://www.w3.org/2011/http#", "HTTP namespace" );
+is(
+	SPARQL_RESULTS_NS,
+	"http://www.w3.org/2005/sparql-results#",
+	"SPARQL results namespace",
+);
+
+done_testing();

@@ -1,0 +1,77 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/grouping");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 grouping manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+is(
+	_run( "group-data-1.ttl", "group01.rq" ){results}.length(),
+	2,
+	"W3C grouping simple GROUP BY row count",
+);
+ok(
+	_matches( "group-data-1.ttl", "group01.rq", "group01.srx" ),
+	"W3C grouping group01 exact results",
+);
+is(
+	_run( "group-data-1.ttl", "group03.rq" ){results}.length(),
+	2,
+	"W3C grouping SAMPLE with unbound row count",
+);
+ok(
+	_matches( "group-data-1.ttl", "group03.rq", "group03.srx" ),
+	"W3C grouping group03 exact results",
+);
+is(
+	_run( "group-data-1.ttl", "group04.rq" ){results}.length(),
+	2,
+	"W3C grouping expression alias row count",
+);
+ok(
+	_matches( "group-data-1.ttl", "group04.rq", "group04.srx" ),
+	"W3C grouping group04 exact results",
+);
+is(
+	_run( "group-data-2.ttl", "group05.rq" ){results}.length(),
+	3,
+	"W3C grouping multiple variables row count",
+);
+ok(
+	_matches( "group-data-2.ttl", "group05.rq", "group05.srx" ),
+	"W3C grouping group05 exact results",
+);
+
+done_testing();

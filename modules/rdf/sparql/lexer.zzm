@@ -1,0 +1,263 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/lexer - SPARQL 1.1 tokeniser.
+
+=cut
+
+from rdf/term import SPARQLError;
+from std/string import index, substr;
+
+function _sparql_hex_value ( String ch ) {
+	return 0 + ch if ch ~ /^[0-9]$/;
+	return 10 + index( "abcdef", lc(ch) );
+}
+
+function _sparql_hex_number ( String hex ) {
+	let n := 0;
+	let i := 0;
+	while ( i < length hex ) {
+		n := n * 16 + _sparql_hex_value(substr(hex, i, 1));
+		i++;
+	}
+	return n;
+}
+
+function _sparql_token ( String kind, String value, Number line, Number column ) {
+	return { kind: kind, value: value, line: line, column: column };
+}
+
+function _sparql_lexer_error ( String message, Number line, Number column ) {
+	throw new SPARQLError(
+		message: "SPARQL syntax: " _ message _ " at " _ line _ ":" _ column,
+	);
+}
+
+function _sparql_is_ws ( String ch ) {
+	return ch ~ /\s/;
+}
+
+function _sparql_is_name_continue ( String ch ) {
+	return ch ~ /[A-Za-z0-9_\-.:\\%]/;
+}
+
+function _sparql_valid_codepoint ( Number n ) {
+	return false if n > 1114111;
+	return false if n >= 55296 and n <= 57343;
+	return true;
+}
+
+function _sparql_validate_escape_codepoint (
+	String source,
+	Number pos,
+	Number count,
+	Number line,
+	Number column
+) {
+	let hex := substr(source, pos, count);
+	_sparql_lexer_error( "invalid Unicode escape", line, column )
+		unless hex ~ /^[0-9A-Fa-f]+$/ and length hex == count;
+	_sparql_lexer_error( "invalid Unicode scalar value", line, column )
+		unless _sparql_valid_codepoint(_sparql_hex_number(hex));
+}
+
+function _sparql_read_string (
+	String source,
+	Number start,
+	String quote,
+	Boolean triple,
+	Number line,
+	Number column
+) {
+	let pos := start;
+	let value := triple ? quote _ quote _ quote : quote;
+	let close := triple ? quote _ quote _ quote : quote;
+	while ( pos < length source ) {
+		if ( substr( source, pos, length close ) eq close ) {
+			value _= close;
+			return {
+				token: _sparql_token( "string", value, line, column ),
+				pos: pos + length close,
+			};
+		}
+		let ch := substr( source, pos, 1 );
+		if ( ch eq "\\" ) {
+			let esc := substr( source, pos + 1, 1 );
+			_sparql_lexer_error( "unterminated escape", line, column )
+				if esc eq "";
+			if ( esc eq "u" ) {
+				_sparql_validate_escape_codepoint(
+					source,
+					pos + 2,
+					4,
+					line,
+					column,
+				);
+				value _= substr(source, pos, 6);
+				pos += 6;
+				next;
+			}
+			if ( esc eq "U" ) {
+				_sparql_validate_escape_codepoint(
+					source,
+					pos + 2,
+					8,
+					line,
+					column,
+				);
+				value _= substr(source, pos, 10);
+				pos += 10;
+				next;
+			}
+			_sparql_lexer_error( "invalid escape \\" _ esc, line, column )
+				unless esc ~ /^[btnrf"'\\]$/;
+			value _= "\\" _ esc;
+			pos += 2;
+			next;
+		}
+		value _= ch;
+		pos++;
+	}
+	_sparql_lexer_error( "unterminated string", line, column );
+}
+
+function sparql_lex ( String source ) {
+	let tokens := [];
+	let pos := 0;
+	let line := 1;
+	let column := 1;
+	while ( pos < length source ) {
+		let ch := substr( source, pos, 1 );
+		if ( _sparql_is_ws(ch) ) {
+			if ( ch eq "\n" ) {
+				line++;
+				column := 1;
+			}
+			else {
+				column++;
+			}
+			pos++;
+			next;
+		}
+		if ( ch eq "#" ) {
+			while ( pos < length source and substr( source, pos, 1 ) ne "\n" ) {
+				pos++;
+				column++;
+			}
+			next;
+		}
+		let start_line := line;
+		let start_column := column;
+		if ( ch eq "\"" or ch eq "'" ) {
+			let triple := substr( source, pos, 3 ) eq ch _ ch _ ch;
+			let result := _sparql_read_string(
+				source,
+				pos + ( triple ? 3 : 1 ),
+				ch,
+				triple,
+				start_line,
+				start_column,
+			);
+			tokens.push(result{token});
+			column += result{pos} - pos;
+			pos := result{pos};
+			next;
+		}
+		if ( ch eq "<" and substr( source, pos, 2 ) ne "<=" ) {
+			let end := pos + 1;
+			let ok := false;
+			while ( end < length source ) {
+				let c := substr( source, end, 1 );
+				last if _sparql_is_ws(c);
+				if ( c eq ">" ) {
+					ok := true;
+					last;
+				}
+				end++;
+			}
+			if ( ok ) {
+				let value := substr( source, pos, end - pos + 1 );
+				tokens.push(_sparql_token( "iri", value, start_line, start_column ));
+				column += length value;
+				pos := end + 1;
+				next;
+			}
+		}
+		if ( substr( source, pos, 2 ) ~ /^(<=|>=|!=|&&|\|\|)$/ ) {
+			let value := substr( source, pos, 2 );
+			tokens.push(_sparql_token( "symbol", value, start_line, start_column ));
+			pos += 2;
+			column += 2;
+			next;
+		}
+		if ( ch ~ /^[{}()\[\];,.*\/|^!+=<>-]$/ ) {
+			tokens.push(_sparql_token( "symbol", ch, start_line, start_column ));
+			pos++;
+			column++;
+			next;
+		}
+		if ( ch eq "?" and not( substr( source, pos + 1, 1 ) ~ /[A-Za-z0-9_]/ ) ) {
+			tokens.push(_sparql_token( "symbol", ch, start_line, start_column ));
+			pos++;
+			column++;
+			next;
+		}
+		if ( ch eq "?" or ch eq "$" ) {
+			let end := pos + 1;
+			while ( end < length source and
+				substr( source, end, 1 ) ~ /[A-Za-z0-9_]/
+			) {
+				end++;
+			}
+			_sparql_lexer_error( "expected variable name", start_line, start_column )
+				if end == pos + 1;
+			_sparql_lexer_error( "invalid variable name", start_line, start_column )
+				if substr( source, end, 1 ) eq ":";
+			let value := substr( source, pos, end - pos );
+			tokens.push(_sparql_token( "var", value, start_line, start_column ));
+			column += length value;
+			pos := end;
+			next;
+		}
+		if ( substr( source, pos, 2 ) eq "_:" ) {
+			let end := pos + 2;
+			while ( end < length source and
+				substr( source, end, 1 ) ~ /[A-Za-z0-9_]/
+			) {
+				end++;
+			}
+			_sparql_lexer_error( "expected blank node label", start_line, start_column )
+				if end == pos + 2;
+			_sparql_lexer_error( "invalid blank node label", start_line, start_column )
+				if substr( source, end, 1 ) eq ":";
+			let value := substr( source, pos, end - pos );
+			tokens.push(_sparql_token( "bnode", value, start_line, start_column ));
+			column += length value;
+			pos := end;
+			next;
+		}
+		if ( ch eq "\\" ) {
+			_sparql_lexer_error( "escaped codepoint is not a token", line, column )
+				if substr( source, pos, 2 ) eq "\\u" or
+				substr( source, pos, 2 ) eq "\\U";
+		}
+		let end := pos;
+		while ( end < length source and
+			not _sparql_is_ws(substr( source, end, 1 )) and
+			not( substr( source, end, 1 ) ~ /^[{}()\[\];,*\/|^!+=<>]$/ )
+		) {
+			end++;
+		}
+		let value := substr( source, pos, end - pos );
+		_sparql_lexer_error( "empty token", line, column )
+			if value eq "";
+		_sparql_lexer_error( "invalid prefixed name", line, column )
+			if value ~ /\\:/;
+		tokens.push(_sparql_token( "word", value, start_line, start_column ));
+		column += length value;
+		pos := end;
+	}
+	tokens.push(_sparql_token( "eof", "", line, column ));
+	return tokens;
+}

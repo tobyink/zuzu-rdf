@@ -1,0 +1,156 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/parser/turtle - Turtle parser.
+
+=cut
+
+from rdf/parser/common import RDFReader, _parser_result;
+from rdf/term import RDF_NS, RDFIRI, rdf_iri, rdf_quad;
+from std/string import ends_with, substr;
+
+function _turtle_blank_node;
+function _turtle_collection;
+function _turtle_object;
+function _turtle_predicate_object_list;
+
+function _turtle_directive ( RDFReader reader ) {
+	reader._skip_ws();
+	if ( reader._starts("@prefix") or reader._starts("PREFIX") ) {
+		reader.advance( reader._starts("@prefix") ? 7 : 6 );
+		let name := reader.read_name();
+		name := substr( name, 0, length name - 1 ) if ends_with( name, ":" );
+		let iri := reader.read_iri();
+		reader.get_prefixes().set( name, iri.get_value() );
+		reader._skip_ws();
+		reader._expect(".") if reader._peek() eq ".";
+		return true;
+	}
+	if ( reader._starts("@base") or reader._starts("BASE") ) {
+		reader.advance( reader._starts("@base") ? 5 : 4 );
+		reader.set_base(reader.read_iri().get_value());
+		reader._skip_ws();
+		reader._expect(".") if reader._peek() eq ".";
+		return true;
+	}
+	return false;
+}
+
+function _turtle_predicate ( RDFReader reader ) {
+	let predicate := reader.read_term();
+	reader._error("Turtle predicate must be an IRI")
+		unless predicate instanceof RDFIRI;
+	return predicate;
+}
+
+function _turtle_object ( RDFReader reader, Array out ) {
+	reader._skip_ws();
+	if ( reader._peek() eq "[" ) {
+		return _turtle_blank_node(reader, out);
+	}
+	if ( reader._peek() eq "(" ) {
+		return _turtle_collection(reader, out);
+	}
+	return reader.read_object();
+}
+
+function _turtle_object_list ( RDFReader reader, subject, predicate,
+	Array out ) {
+	while ( true ) {
+		let object := _turtle_object( reader, out );
+		out.push(rdf_quad( subject, predicate, object ));
+		reader._skip_ws();
+		last unless reader._peek() eq ",";
+		reader.advance(1);
+	}
+}
+
+function _turtle_predicate_object_list ( RDFReader reader, subject,
+	Array out ) {
+	while ( true ) {
+		let predicate := _turtle_predicate(reader);
+		_turtle_object_list( reader, subject, predicate, out );
+		reader._skip_ws();
+		last unless reader._peek() eq ";";
+		reader.advance(1);
+		reader._skip_ws();
+		last if reader._peek() eq "." or reader._peek() eq "]";
+	}
+}
+
+function _turtle_blank_node ( RDFReader reader, Array out ) {
+	reader._expect("[");
+	let blank := reader.fresh_blank();
+	reader._skip_ws();
+	if ( reader._peek() ne "]" ) {
+		_turtle_predicate_object_list( reader, blank, out );
+	}
+	reader._expect("]");
+	return blank;
+}
+
+function _turtle_collection ( RDFReader reader, Array out ) {
+	reader._expect("(");
+	reader._skip_ws();
+	if ( reader._peek() eq ")" ) {
+		reader.advance(1);
+		return rdf_iri(RDF_NS _ "nil");
+	}
+	let head := reader.fresh_blank();
+	let current := head;
+	while ( true ) {
+		let item := _turtle_object( reader, out );
+		out.push(rdf_quad(
+			current,
+			rdf_iri(RDF_NS _ "first"),
+			item,
+		));
+		reader._skip_ws();
+		if ( reader._peek() eq ")" ) {
+			out.push(rdf_quad(
+				current,
+				rdf_iri(RDF_NS _ "rest"),
+				rdf_iri(RDF_NS _ "nil"),
+			));
+			reader.advance(1);
+			return head;
+		}
+		let next_node := reader.fresh_blank();
+		out.push(rdf_quad(
+			current,
+			rdf_iri(RDF_NS _ "rest"),
+			next_node,
+		));
+		current := next_node;
+	}
+}
+
+function _turtle_subject ( RDFReader reader, Array out ) {
+	reader._skip_ws();
+	return _turtle_blank_node( reader, out ) if reader._peek() eq "[";
+	return _turtle_collection( reader, out ) if reader._peek() eq "(";
+	return reader.read_subject();
+}
+
+class TurtleParser {
+	method parse_string ( String text, ... PairList options ) {
+		let reader := new RDFReader(source: text);
+		let out := [];
+		while ( true ) {
+			reader._skip_ws();
+			last if reader._peek() == null;
+			if ( _turtle_directive(reader) ) {
+				next;
+			}
+			let subject := _turtle_subject( reader, out );
+			_turtle_predicate_object_list( reader, subject, out );
+			reader._expect(".");
+		}
+		return _parser_result( out, options );
+	}
+
+	method parse_file ( path, ... PairList options ) {
+		return self.parse_string(path.slurp_utf8(), ...options);
+	}
+}

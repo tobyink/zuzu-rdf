@@ -1,0 +1,148 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/term - RDF terms and quads.
+
+=cut
+
+from std/digest/sha import sha256_hex;
+from std/string import replace;
+
+const RDF_NS := "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+const XSD_NS := "http://www.w3.org/2001/XMLSchema#";
+const DEFAULT_GRAPH_KEY := "G|";
+
+function rdf_iri;
+function rdf_default_graph;
+function rdf_term_key;
+
+class RDFError extends Exception;
+class RDFSyntaxError extends RDFError;
+class RDFStoreError extends RDFError;
+class SPARQLError extends RDFError;
+
+class RDFIRI {
+	let String value with get := "";
+
+	method to_String () {
+		return "<" _ value _ ">";
+	}
+}
+
+class RDFBlank {
+	let String value with get := "";
+
+	method to_String () {
+		return "_:" _ value;
+	}
+}
+
+class RDFLiteral {
+	let String value with get := "";
+	let String lang with get := "";
+	let datatype with get := null;
+
+	method __build__ () {
+		lang := lc(lang) if lang ne "";
+		datatype := rdf_iri(lang ne "" ? RDF_NS _ "langString" : XSD_NS _ "string")
+			if datatype == null;
+	}
+
+	method to_String () {
+		let out := "\"" _ value _ "\"";
+		out _= "@" _ lang if lang ne "";
+		if ( lang eq "" and datatype != null and rdf_term_key(datatype) ne
+			rdf_term_key(rdf_iri(XSD_NS _ "string")) ) {
+			out _= "^^" _ datatype.to_String();
+		}
+		return out;
+	}
+}
+
+class RDFDefaultGraph {
+	method to_String () {
+		return "#default";
+	}
+}
+
+class RDFQuad {
+	let subject with get := null;
+	let predicate with get := null;
+	let object with get := null;
+	let graph with get := null;
+
+	method __build__ () {
+		graph := rdf_default_graph() if graph == null;
+	}
+
+	method to_Array () {
+		return [ subject, predicate, object, graph ];
+	}
+}
+
+function rdf_iri ( String value ) {
+	return new RDFIRI(value: value);
+}
+
+function rdf_blank ( String value ) {
+	return new RDFBlank(value: value);
+}
+
+function rdf_literal ( value, String lang := "", datatype := null ) {
+	return new RDFLiteral(value: "" _ value, lang: "" _ lang, datatype: datatype);
+}
+
+function rdf_default_graph () {
+	return new RDFDefaultGraph();
+}
+
+function rdf_quad ( subject, predicate, object, graph? ) {
+	return new RDFQuad(
+		subject: subject,
+		predicate: predicate,
+		object: object,
+		graph: graph == null ? rdf_default_graph() : graph,
+	);
+}
+
+function rdf_term_kind ( term ) {
+	return "iri" if term instanceof RDFIRI;
+	return "blank" if term instanceof RDFBlank;
+	return "literal" if term instanceof RDFLiteral;
+	return "default" if term instanceof RDFDefaultGraph;
+	die "rdf: expected RDF term";
+}
+
+function _escape_key ( String text ) {
+	let out := replace( text, /\\/, "\\\\", "g" );
+	out := replace( out, "\n", "\\n", "g" );
+	out := replace( out, /\|/, "\\|", "g" );
+	return out;
+}
+
+function rdf_term_key ( term ) {
+	if ( term instanceof RDFIRI ) {
+		return "I|" _ _escape_key(term.get_value());
+	}
+	if ( term instanceof RDFBlank ) {
+		return "B|" _ _escape_key(term.get_value());
+	}
+	if ( term instanceof RDFLiteral ) {
+		return "L|" _ _escape_key(term.get_value()) _ "|" _
+			_escape_key(term.get_lang()) _ "|" _
+			_escape_key(term.get_datatype().get_value());
+	}
+	if ( term instanceof RDFDefaultGraph ) {
+		return DEFAULT_GRAPH_KEY;
+	}
+	die "rdf: expected RDF term";
+}
+
+function rdf_term_hash ( term ) {
+	return sha256_hex(to_binary(rdf_term_key(term)));
+}
+
+function rdf_term_equals ( left, right ) {
+	return rdf_term_key(left) eq rdf_term_key(right);
+}

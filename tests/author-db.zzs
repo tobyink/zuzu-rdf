@@ -1,0 +1,73 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "proc" );
+
+from rdf import RDFStore, rdf_iri, rdf_literal, rdf_quad, sparql_query;
+from std/db import DB;
+from std/proc import Env;
+
+function exercise_store_backend ( dbh, String backend, String prefix ) {
+	let store := new RDFStore(dbh: dbh, backend: backend, prefix: prefix);
+	store.drop_schema();
+	store.install_schema();
+	ok( store.verify_schema(), backend _ " verifies RDF schema" );
+
+	let s := rdf_iri("http://example.com/" _ backend _ "/s");
+	let p := rdf_iri("http://example.com/p");
+	let o := rdf_literal("value", "en");
+	store.add_quad(rdf_quad( s, p, o ));
+	store.add_quad(rdf_quad( s, p, o ));
+
+	is( store.find( s, p ).length(), 1, backend _ " stores duplicate quads once" );
+	is(
+		sparql_query(
+			store,
+			"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ?s ex:p ?o . }
+""",
+		){results}.length(),
+		1,
+		backend _ " supports SPARQL over std/db store",
+	);
+
+	store.drop_schema();
+}
+
+let ran := false;
+
+if ( Env.get( "RDF_AUTHOR_MYSQL", false ) ) {
+	let dsn := Env.get( "RDF_AUTHOR_MYSQL_DSN" );
+	if ( dsn == null ) {
+		let db_user := Env.get( "USER", "" );
+		dsn := `dbi:mysql:database=zuzutest;user=${db_user}`;
+	}
+	exercise_store_backend(
+		DB.connect(dsn),
+		"mysql",
+		"rdf_author_mysql_",
+	);
+	ran := true;
+}
+
+if ( Env.get( "RDF_AUTHOR_POSTGRESQL", false ) ) {
+	let dsn := Env.get( "RDF_AUTHOR_POSTGRESQL_DSN" );
+	if ( dsn == null ) {
+		let db_user := Env.get( "USER", "" );
+		dsn := `dbi:Pg:host=/var/run/postgresql;dbname=zuzutest;user=${db_user}`;
+	}
+	exercise_store_backend(
+		DB.connect(dsn),
+		"postgresql",
+		"rdf_author_postgresql_",
+	);
+	ran := true;
+}
+
+if ( not ran ) {
+	pass( "MySQL/PostgreSQL author store tests skipped; set RDF_AUTHOR_MYSQL or RDF_AUTHOR_POSTGRESQL" );
+}
+
+done_testing();

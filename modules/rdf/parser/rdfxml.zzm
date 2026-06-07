@@ -1,0 +1,606 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/parser/rdfxml - RDF/XML parser.
+
+=cut
+
+from rdf/parser/common import _parser_options, _parser_result;
+from rdf/term import
+	RDF_NS,
+	RDFSyntaxError,
+	XSD_NS,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad;
+from std/data/xml import XML;
+from std/string import index, join, ord, split, starts_with, substr, trim;
+
+const XML_NS := "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NS := "http://www.w3.org/2000/xmlns/";
+
+function _rdfxml_parse_node_element;
+function _rdfxml_parse_property_elements;
+
+function _rdfxml_error ( String message ) {
+	throw new RDFSyntaxError(message: "RDF/XML: " _ message);
+}
+
+function _rdfxml_uri_split ( String uri ) {
+	let hash := index( uri, "#" );
+	return hash < 0
+		? { base: uri, fragment: "" }
+		: { base: substr( uri, 0, hash ), fragment: substr( uri, hash ) };
+}
+
+function _rdfxml_remove_dot_segments ( String path ) {
+	let absolute := starts_with( path, "/" );
+	let trailing := length path > 1 and substr( path, length path - 1, 1 ) eq "/";
+	let out := [];
+	for ( let segment in split( path, "/" ) ) {
+		next if segment eq "" or segment eq ".";
+		if ( segment eq ".." ) {
+			if ( out.length() > 0 and out[out.length() - 1] ne ".." ) {
+				out.pop();
+			}
+			else if ( not absolute ) {
+				out.push(segment);
+			}
+			next;
+		}
+		out.push(segment);
+	}
+	let result := join( "/", out );
+	result := "/" _ result if absolute;
+	result _= "/" if trailing and result ne "/";
+	return "/" if result eq "" and absolute;
+	return result;
+}
+
+function _rdfxml_resolve ( String base, String ref ) {
+	return ref if ref ~ /^[A-Za-z][A-Za-z0-9+.-]*:/;
+	return _rdfxml_uri_split(base){base} _ ref if starts_with( ref, "#" );
+	return ref if base eq "";
+	let base_split := _rdfxml_uri_split(base){base};
+	return base_split if ref eq "";
+	if ( starts_with( ref, "//" ) and
+		base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/ ) {
+		let m := base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:)(.*)$/;
+		return m[1] _ ref;
+	}
+	if ( starts_with( ref, "/" ) ) {
+		if ( base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*)(.*)$/ ) {
+			let m := base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*)(.*)$/;
+			return m[1] _ _rdfxml_remove_dot_segments(ref);
+		}
+		return _rdfxml_remove_dot_segments(ref);
+	}
+	let slash := -1;
+	let i := 0;
+	while ( i < length base_split ) {
+		slash := i if substr( base_split, i, 1 ) eq "/";
+		i++;
+	}
+	let dir := slash >= 0 ? substr( base_split, 0, slash + 1 ) : base_split _ "/";
+	if ( base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*)(.*)$/ ) {
+		let m := base_split ~ /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/?#]*)(.*)$/;
+		let base_dir := slash >= length m[1]
+			? substr( base_split, 0, slash + 1 )
+			: m[1] _ "/";
+		return m[1] _ _rdfxml_remove_dot_segments(
+			substr( base_dir, length m[1] ) _ ref,
+		);
+	}
+	return _rdfxml_remove_dot_segments(dir _ ref);
+}
+
+function _rdfxml_element_iri ( node ) {
+	let ns := node.namespaceURI();
+	ns := "" if ns == null;
+	return ns _ node.localName();
+}
+
+function _rdfxml_attr_info ( attr ) {
+	let ns := attr.namespaceURI();
+	ns := "" if ns == null;
+	let local := attr.localName();
+	local := attr.nodeName() if local == null;
+	let name := attr.nodeName();
+	if ( ns eq "" and starts_with( name, "xml:" ) ) {
+		ns := XML_NS;
+		local := substr( name, 4 );
+	}
+	return {
+		ns: ns,
+		local: local,
+		name: name,
+		value: attr.nodeValue(),
+	};
+}
+
+function _rdfxml_attrs ( node ) {
+	let out := [];
+	for ( let attr in node.attributes() ) {
+		let a := _rdfxml_attr_info(attr);
+		next if a{ns} eq XMLNS_NS or a{name} eq "xmlns" or
+			starts_with( a{name}, "xmlns:" );
+		out.push(a);
+	}
+	return out;
+}
+
+function _rdfxml_attr ( node, String ns, String local ) {
+	for ( let a in _rdfxml_attrs(node) ) {
+		return a{value} if a{ns} eq ns and a{local} eq local;
+	}
+	return null;
+}
+
+function _rdfxml_attrs_named ( node, String ns, Array locals ) {
+	let found := [];
+	for ( let a in _rdfxml_attrs(node) ) {
+		if ( a{ns} eq ns and a{local} in locals ) {
+			found.push(a{local});
+		}
+	}
+	return found;
+}
+
+function _rdfxml_ncname ( String value ) {
+	return false if value eq "";
+	return false if value ~ /[:\s#\/]/;
+	let first := substr( value, 0, 1 );
+	return false if first ~ /[0-9.\-]/;
+	let first_code := ord( value, 0 );
+	return false if first_code >= 768 and first_code <= 879;
+	return true;
+}
+
+function _rdfxml_id_iri ( parser, Dict ctx, String id ) {
+	_rdfxml_error("rdf:ID expects an XML NCName") unless _rdfxml_ncname(id);
+	let iri := _rdfxml_resolve( ctx{base}, "#" _ id );
+	_rdfxml_error("duplicate rdf:ID " _ iri) if parser.get_ids().exists(iri);
+	parser.get_ids().set( iri, true );
+	return rdf_iri(iri);
+}
+
+function _rdfxml_node_id ( String node_id ) {
+	_rdfxml_error("rdf:nodeID expects an XML NCName")
+		unless _rdfxml_ncname(node_id);
+	return rdf_blank(node_id);
+}
+
+function _rdfxml_child_context ( Dict parent, node ) {
+	let base := parent{base};
+	let lang := parent{lang};
+	let xml_base := _rdfxml_attr( node, XML_NS, "base" );
+	base := _rdfxml_resolve( base, xml_base ) if xml_base != null;
+	let xml_lang := _rdfxml_attr( node, XML_NS, "lang" );
+	lang := xml_lang if xml_lang != null;
+	return { base: base, lang: lang };
+}
+
+function _rdfxml_is_syntax_attr ( Dict a ) {
+	return a{ns} eq RDF_NS and a{local} in [
+		"about",
+		"ID",
+		"nodeID",
+		"type",
+		"resource",
+		"datatype",
+		"parseType",
+		"li",
+		"bagID",
+		"aboutEach",
+		"aboutEachPrefix",
+	];
+}
+
+function _rdfxml_forbidden_node_name ( node ) {
+	return false unless node.namespaceURI() eq RDF_NS;
+	return node.localName() in [
+		"RDF",
+		"ID",
+		"about",
+		"bagID",
+		"parseType",
+		"resource",
+		"nodeID",
+		"li",
+		"aboutEach",
+		"aboutEachPrefix",
+	];
+}
+
+function _rdfxml_forbidden_property_name ( node ) {
+	return false unless node.namespaceURI() eq RDF_NS;
+	return node.localName() in [
+		"RDF",
+		"Description",
+		"ID",
+		"about",
+		"bagID",
+		"parseType",
+		"resource",
+		"nodeID",
+		"datatype",
+		"aboutEach",
+		"aboutEachPrefix",
+	];
+}
+
+function _rdfxml_property_attrs ( node ) {
+	let out := [];
+	for ( let a in _rdfxml_attrs(node) ) {
+		next if a{ns} eq XML_NS;
+		next if a{ns} eq "" and starts_with( a{name}, "xml" );
+		next if _rdfxml_is_syntax_attr(a);
+		out.push(a);
+	}
+	return out;
+}
+
+function _rdfxml_add_property_attrs ( subject, node, Dict ctx, Array out ) {
+	for ( let a in _rdfxml_property_attrs(node) ) {
+		out.push(rdf_quad(
+			subject,
+			rdf_iri(a{ns} _ a{local}),
+			rdf_literal( a{value}, ctx{lang} ),
+			rdf_default_graph(),
+		));
+	}
+}
+
+function _rdfxml_subject ( parser, node, Dict ctx ) {
+	let subject_attrs := _rdfxml_attrs_named(
+		node,
+		RDF_NS,
+		[ "about", "ID", "nodeID" ],
+	);
+	_rdfxml_error("node element has multiple subject attributes")
+		if subject_attrs.length() > 1;
+	let about := _rdfxml_attr( node, RDF_NS, "about" );
+	return rdf_iri(_rdfxml_resolve( ctx{base}, about )) if about != null;
+	let id := _rdfxml_attr( node, RDF_NS, "ID" );
+	return _rdfxml_id_iri( parser, ctx, id ) if id != null;
+	let node_id := _rdfxml_attr( node, RDF_NS, "nodeID" );
+	return _rdfxml_node_id(node_id) if node_id != null;
+	return parser.fresh_blank();
+}
+
+function _rdfxml_check_node_attrs ( node ) {
+	for ( let a in _rdfxml_attrs(node) ) {
+		next if a{ns} ne RDF_NS;
+		next if a{local} in [ "about", "ID", "nodeID", "type" ];
+		next unless _rdfxml_is_syntax_attr(a);
+		_rdfxml_error("rdf:" _ a{local} _ " is not allowed on node elements");
+	}
+}
+
+function _rdfxml_check_property_attrs ( node ) {
+	let resourceish := _rdfxml_attrs_named(
+		node,
+		RDF_NS,
+		[ "resource", "nodeID" ],
+	);
+	_rdfxml_error("property element has multiple resource attributes")
+		if resourceish.length() > 1;
+	let valueish := _rdfxml_attrs_named(
+		node,
+		RDF_NS,
+		[ "resource", "nodeID", "datatype", "parseType" ],
+	);
+	_rdfxml_error("property element mixes resource, datatype, or parseType")
+		if valueish.length() > 1;
+	for ( let a in _rdfxml_attrs(node) ) {
+		next if a{ns} ne RDF_NS;
+		next if a{local} in [
+			"ID",
+			"resource",
+			"nodeID",
+			"datatype",
+			"parseType",
+		];
+		_rdfxml_error("rdf:" _ a{local} _ " is not allowed on property elements");
+	}
+}
+
+function _rdfxml_element_children ( node ) {
+	return node.children();
+}
+
+function _rdfxml_has_non_ws_text ( node ) {
+	for ( let child in node.childNodes() ) {
+		if ( child.nodeKind() eq "text" and trim(child.nodeValue()) ne "" ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function _rdfxml_namespace_attrs ( node ) {
+	let scopes := {};
+	let ordered := [];
+	let chain := [];
+	let cursor := node;
+	while ( cursor != null and cursor.nodeKind() eq "element" ) {
+		chain.push(cursor);
+		cursor := cursor.parentNode();
+	}
+	let i := chain.length() - 1;
+	while ( i >= 0 ) {
+		cursor := chain[i];
+		for ( let attr in cursor.attributes() ) {
+			let a := _rdfxml_attr_info(attr);
+			if ( a{name} eq "xmlns" or starts_with( a{name}, "xmlns:" ) ) {
+				if ( not scopes.exists(a{name}) ) {
+					scopes.set( a{name}, a{value} );
+					ordered.push(a{name});
+				}
+			}
+		}
+		i--;
+	}
+	let attrs := [];
+	for ( let key in ordered ) {
+		attrs.push(key _ "=\"" _ scopes.get(key) _ "\"");
+	}
+	return attrs;
+}
+
+function _rdfxml_xml_literal ( node ) {
+	let parts := [];
+	for ( let child in node.childNodes() ) {
+		if ( child.nodeKind() eq "element" and not child.hasChildNodes() ) {
+			let attrs := [];
+			for ( let ns_attr in _rdfxml_namespace_attrs(child) ) {
+				attrs.push(ns_attr);
+			}
+			for ( let attr in child.attributes() ) {
+				let a := _rdfxml_attr_info(attr);
+				next if a{name} eq "xmlns" or starts_with( a{name}, "xmlns:" );
+				attrs.push(a{name} _ "=\"" _ a{value} _ "\"");
+			}
+			let attr_text := attrs.length() == 0
+				? ""
+				: " " _ join( " ", attrs.sort( fn ( a, b ) -> a cmp b ) );
+			parts.push("<" _ child.nodeName() _ attr_text _ "></" _
+				child.nodeName() _ ">");
+		}
+		else {
+			parts.push(child.toXML(false));
+		}
+	}
+	return join( "", parts );
+}
+
+function _rdfxml_text_literal ( node ) {
+	return node.textContent();
+}
+
+function _rdfxml_reify ( parser, Dict ctx, id, subject,
+	predicate, object, Array out ) {
+	if ( id == null ) {
+		return;
+	}
+	let stmt := _rdfxml_id_iri( parser, ctx, id );
+	out.push(rdf_quad(
+		stmt,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri(RDF_NS _ "Statement"),
+	));
+	out.push(rdf_quad( stmt, rdf_iri(RDF_NS _ "subject"), subject ));
+	out.push(rdf_quad( stmt, rdf_iri(RDF_NS _ "predicate"), predicate ));
+	out.push(rdf_quad( stmt, rdf_iri(RDF_NS _ "object"), object ));
+}
+
+function _rdfxml_collection ( parser, node, Dict ctx, Array out ) {
+	let items := [];
+	for ( let child in _rdfxml_element_children(node) ) {
+		items.push(_rdfxml_parse_node_element( parser, child, ctx, out ));
+	}
+	return rdf_iri(RDF_NS _ "nil") if items.length() == 0;
+	let head := parser.fresh_blank();
+	let current := head;
+	let i := 0;
+	while ( i < items.length() ) {
+		out.push(rdf_quad(
+			current,
+			rdf_iri(RDF_NS _ "first"),
+			items[i],
+		));
+		if ( i == items.length() - 1 ) {
+			out.push(rdf_quad(
+				current,
+				rdf_iri(RDF_NS _ "rest"),
+				rdf_iri(RDF_NS _ "nil"),
+			));
+		}
+		else {
+			let next_node := parser.fresh_blank();
+			out.push(rdf_quad(
+				current,
+				rdf_iri(RDF_NS _ "rest"),
+				next_node,
+			));
+			current := next_node;
+		}
+		i++;
+	}
+	return head;
+}
+
+function _rdfxml_property_object ( parser, node, Dict ctx, Array out ) {
+	let parse_type := _rdfxml_attr( node, RDF_NS, "parseType" );
+	if ( parse_type != null ) {
+		if ( parse_type eq "Resource" ) {
+			let blank := parser.fresh_blank();
+			_rdfxml_parse_property_elements( parser, blank, node, ctx, out );
+			return blank;
+		}
+		if ( parse_type eq "Collection" ) {
+			return _rdfxml_collection( parser, node, ctx, out );
+		}
+		return rdf_literal(
+			_rdfxml_xml_literal(node),
+			"",
+			rdf_iri(RDF_NS _ "XMLLiteral"),
+		);
+	}
+
+	let resource := _rdfxml_attr( node, RDF_NS, "resource" );
+	if ( resource != null ) {
+		let object := rdf_iri(_rdfxml_resolve( ctx{base}, resource ));
+		_rdfxml_add_property_attrs( object, node, ctx, out );
+		return object;
+	}
+	let node_id := _rdfxml_attr( node, RDF_NS, "nodeID" );
+	if ( node_id != null ) {
+		let object := _rdfxml_node_id(node_id);
+		_rdfxml_add_property_attrs( object, node, ctx, out );
+		return object;
+	}
+
+	let datatype := _rdfxml_attr( node, RDF_NS, "datatype" );
+	if ( datatype != null ) {
+		_rdfxml_error("rdf:datatype property element has child elements")
+			if _rdfxml_element_children(node).length() > 0;
+		return rdf_literal(
+			_rdfxml_text_literal(node),
+			"",
+			rdf_iri(_rdfxml_resolve( ctx{base}, datatype )),
+		);
+	}
+
+	let children := _rdfxml_element_children(node);
+	if ( children.length() == 0 ) {
+		if ( _rdfxml_property_attrs(node).length() > 0 ) {
+			let blank := parser.fresh_blank();
+			_rdfxml_add_property_attrs( blank, node, ctx, out );
+			return blank;
+		}
+		return rdf_literal( _rdfxml_text_literal(node), ctx{lang} );
+	}
+
+	_rdfxml_error("resource property element has mixed text")
+		if _rdfxml_has_non_ws_text(node);
+	_rdfxml_error("resource property element has multiple node children")
+		if children.length() != 1;
+	return _rdfxml_parse_node_element( parser, children[0], ctx, out );
+}
+
+function _rdfxml_property_predicate ( parser, node ) {
+	if ( node.namespaceURI() eq RDF_NS and node.localName() eq "li" ) {
+		parser.set_li_counter(parser.get_li_counter() + 1);
+		return rdf_iri(RDF_NS _ "_" _ parser.get_li_counter());
+	}
+	return rdf_iri(_rdfxml_element_iri(node));
+}
+
+function _rdfxml_parse_property_element ( parser, subject, node,
+	Dict parent_ctx, Array out ) {
+	let ctx := _rdfxml_child_context( parent_ctx, node );
+	_rdfxml_error("rdf:" _ node.localName() _ " is not allowed as a property element")
+		if _rdfxml_forbidden_property_name(node);
+	_rdfxml_check_property_attrs(node);
+	let predicate := _rdfxml_property_predicate( parser, node );
+	let object := _rdfxml_property_object( parser, node, ctx, out );
+	out.push(rdf_quad( subject, predicate, object ));
+	_rdfxml_reify(
+		parser,
+		ctx,
+		_rdfxml_attr( node, RDF_NS, "ID" ),
+		subject,
+		predicate,
+		object,
+		out,
+	);
+	return object;
+}
+
+function _rdfxml_parse_property_elements ( parser, subject, node,
+	Dict ctx, Array out ) {
+	let saved_li := parser.get_li_counter();
+	parser.set_li_counter(0);
+	_rdfxml_error("node element has non-whitespace text")
+		if _rdfxml_has_non_ws_text(node);
+	for ( let prop in _rdfxml_element_children(node) ) {
+		_rdfxml_parse_property_element( parser, subject, prop, ctx, out );
+	}
+	parser.set_li_counter(saved_li);
+}
+
+function _rdfxml_parse_node_element ( parser, node, Dict parent_ctx,
+	Array out ) {
+	let ctx := _rdfxml_child_context( parent_ctx, node );
+	_rdfxml_error("rdf:" _ node.localName() _ " is not allowed as a node element")
+		if _rdfxml_forbidden_node_name(node);
+	_rdfxml_check_node_attrs(node);
+	let subject := _rdfxml_subject( parser, node, ctx );
+
+	if ( not( node.namespaceURI() eq RDF_NS and node.localName() eq "Description" ) ) {
+		out.push(rdf_quad(
+			subject,
+			rdf_iri(RDF_NS _ "type"),
+			rdf_iri(_rdfxml_element_iri(node)),
+		));
+	}
+
+	let rdf_type := _rdfxml_attr( node, RDF_NS, "type" );
+	if ( rdf_type != null ) {
+		out.push(rdf_quad(
+			subject,
+			rdf_iri(RDF_NS _ "type"),
+			rdf_iri(_rdfxml_resolve( ctx{base}, rdf_type )),
+		));
+	}
+
+	_rdfxml_add_property_attrs( subject, node, ctx, out );
+	_rdfxml_parse_property_elements( parser, subject, node, ctx, out );
+	return subject;
+}
+
+class RdfXmlParser {
+	let ids with get := {};
+	let Number blank_counter := 0;
+	let Number li_counter with get, set := 0;
+
+	method fresh_blank () {
+		blank_counter++;
+		return rdf_blank("genid" _ blank_counter);
+	}
+
+	method parse_string ( String text, ... PairList options ) {
+		let opts := _parser_options(options);
+		ids := {};
+		blank_counter := 0;
+		li_counter := 0;
+
+		let doc := XML.parse(text);
+		let root := doc.documentElement();
+		let ctx := { base: opts{base}, lang: "" };
+		let subjects := [];
+		if ( root.namespaceURI() eq RDF_NS and root.localName() eq "RDF" ) {
+			ctx := _rdfxml_child_context( ctx, root );
+			subjects := root.children();
+			_rdfxml_error("rdf:RDF has non-whitespace text")
+				if _rdfxml_has_non_ws_text(root);
+		}
+		else {
+			subjects := [ root ];
+		}
+
+		let out := [];
+		for ( let subj_node in subjects ) {
+			_rdfxml_parse_node_element( self, subj_node, ctx, out );
+		}
+		return _parser_result( out, options );
+	}
+
+	method parse_file ( path, ... PairList options ) {
+		return self.parse_string(path.slurp_utf8(), ...options);
+	}
+}

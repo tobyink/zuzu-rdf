@@ -1,0 +1,53 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/ntriples - N-Triples serializer.
+
+=cut
+
+from rdf/term import RDFBlank, RDFIRI, RDFLiteral, XSD_NS, rdf_iri, rdf_term_key;
+from std/string import join, replace;
+
+function _nt_escape ( String text ) {
+	let out := replace( text, /\\/, "\\\\", "g" );
+	out := replace( out, "\t", "\\t", "g" );
+	out := replace( out, "\n", "\\n", "g" );
+	out := replace( out, "\r", "\\r", "g" );
+	out := replace( out, "\"", "\\\"", "g" );
+	return out;
+}
+
+function _nt_term ( term ) {
+	if ( term instanceof RDFIRI ) {
+		return "<" _ term.get_value() _ ">";
+	}
+	if ( term instanceof RDFBlank ) {
+		return "_:" _ term.get_value();
+	}
+	if ( term instanceof RDFLiteral ) {
+		let out := "\"" _ _nt_escape(term.get_value()) _ "\"";
+		out _= "@" _ term.get_lang() if term.get_lang() ne "";
+		if ( term.get_lang() eq "" and term.get_datatype() != null and
+			rdf_term_key(term.get_datatype()) ne
+			rdf_term_key(rdf_iri(XSD_NS _ "string")) ) {
+			out _= "^^<" _ term.get_datatype().get_value() _ ">";
+		}
+		return out;
+	}
+	die "rdf: cannot serialize graph term as object";
+}
+
+class NTriplesSerializer {
+	method serialize ( Array quads ) {
+		let lines := [];
+		for ( let quad in quads ) {
+			lines.push(
+				_nt_term(quad.get_subject()) _ " " _
+				_nt_term(quad.get_predicate()) _ " " _
+				_nt_term(quad.get_object()) _ " .",
+			);
+		}
+		return join( "\n", lines ) _ ( lines.length() > 0 ? "\n" : "" );
+	}
+}

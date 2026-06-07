@@ -1,0 +1,949 @@
+from test/more import *;
+
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import
+	RDF_NS,
+	NQuadsParser,
+	NQuadsSerializer,
+	NTriplesParser,
+	NTriplesSerializer,
+	RDFStore,
+	XSD_NS,
+	RdfXmlParser,
+	TurtleParser,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_term_equals,
+	rdf_term_kind,
+	sparql_parse,
+	sparql_query;
+from std/db import DB;
+from std/io import Path;
+
+let ex_s := rdf_iri("http://example.com/s");
+let ex_p := rdf_iri("http://example.com/p");
+let lit := rdf_literal("value", "en");
+let quad := rdf_quad( ex_s, ex_p, lit );
+
+is( rdf_term_kind(ex_s), "iri", "IRI term kind" );
+ok( rdf_term_equals( ex_s, rdf_iri("http://example.com/s") ), "IRI equality" );
+ok( not rdf_term_equals( lit, rdf_literal("value") ), "literal language affects equality" );
+
+let nt_serializer := new NTriplesSerializer();
+let nt_parser := new NTriplesParser();
+let nt := nt_serializer.serialize([quad]);
+like( nt, /<http:\/\/example\.com\/s>/, "N-Triples serializes subject" );
+like( nt, /"value"@en/, "N-Triples serializes lang literal" );
+is( nt_parser.parse_string(nt)[0].get_object().get_lang(), "en", "N-Triples parses lang literal" );
+
+let nq_text := "<http://example.com/s> <http://example.com/p> \"v\" <http://example.com/g> .\n";
+let nq_parser := new NQuadsParser();
+let nq_serializer := new NQuadsSerializer();
+let nq := nq_parser.parse_string(nq_text);
+is( nq[0].get_graph().get_value(), "http://example.com/g", "N-Quads parses graph" );
+like( nq_serializer.serialize(nq), /<http:\/\/example\.com\/g>/, "N-Quads serializes graph" );
+
+let turtle_parser := new TurtleParser();
+let turtle := turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "from turtle" .
+""");
+is( turtle[0].get_subject().get_value(), "http://example.com/s", "Turtle expands subject prefix" );
+is( turtle[0].get_object().get_value(), "from turtle", "Turtle parses literal" );
+
+let turtle_compact := turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p ex:o3.
+ex:a.b ex:p 1.0.
+""");
+is(
+	turtle_compact[0].get_object().get_value(),
+	"http://example.com/o3",
+	"Turtle leaves compact terminal dot out of prefixed name",
+);
+is(
+	turtle_compact[1].get_subject().get_value(),
+	"http://example.com/a.b",
+	"Turtle keeps interior dot in prefixed name",
+);
+is(
+	turtle_compact[1].get_object().get_value(),
+	"1.0",
+	"Turtle leaves compact terminal dot out of decimal literal",
+);
+
+let turtle_more := turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s2 ex:p "one", "two";
+	ex:q [ ex:n 1; ex:flag true ];
+	ex:list ( "a" "b" ) .
+""");
+let turtle_store := new RDFStore(dbh: DB.temp());
+turtle_store.install_schema();
+turtle_store.add_quads(turtle_more);
+is(
+	turtle_store.find(
+		rdf_iri("http://example.com/s2"),
+		rdf_iri("http://example.com/p"),
+	).length(),
+	2,
+	"Turtle parses comma-separated object lists",
+);
+is(
+	turtle_store.find( null, rdf_iri("http://example.com/n") )[0]
+		.get_object().get_datatype().get_value(),
+	XSD_NS _ "integer",
+	"Turtle parses integer literals",
+);
+is(
+	turtle_store.find( null, rdf_iri("http://example.com/flag") )[0]
+		.get_object().get_datatype().get_value(),
+	XSD_NS _ "boolean",
+	"Turtle parses boolean literals in blank-node property lists",
+);
+let list_head := turtle_store.find(
+	rdf_iri("http://example.com/s2"),
+	rdf_iri("http://example.com/list"),
+)[0].get_object();
+is(
+	turtle_store.find( list_head, rdf_iri(RDF_NS _ "first") )[0]
+		.get_object().get_value(),
+	"a",
+	"Turtle expands RDF collections",
+);
+
+let rdfxml_parser := new RdfXmlParser();
+let rdfxml := rdfxml_parser.parse_string("""
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:ex="http://example.com/">
+  <rdf:Description rdf:about="http://example.com/s">
+    <ex:p>from xml</ex:p>
+  </rdf:Description>
+</rdf:RDF>
+""");
+is( rdfxml[0].get_predicate().get_value(), "http://example.com/p", "RDF/XML parses property element" );
+is( rdfxml[0].get_object().get_value(), "from xml", "RDF/XML parses literal text" );
+
+let rdfxml_more_store := new RDFStore(dbh: DB.temp());
+rdfxml_more_store.install_schema();
+let rdfxml_more := rdfxml_parser.parse_string(
+	"""
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:ex="http://example.com/"
+  xml:base="http://example.com/base/"
+  xml:lang="cy">
+  <ex:Thing rdf:ID="thing" ex:label="Café">
+    <ex:name>Enw ☃</ex:name>
+    <ex:link rdf:resource="other" ex:role="friend" />
+    <ex:inner rdf:parseType="Resource">
+      <ex:value>inside</ex:value>
+    </ex:inner>
+    <ex:list rdf:parseType="Collection">
+      <rdf:Description rdf:about="item1" />
+      <rdf:Description rdf:nodeID="b1" />
+    </ex:list>
+    <ex:xml rdf:parseType="Literal"><span>markup Ω</span></ex:xml>
+    <ex:container>
+      <rdf:Bag>
+        <rdf:li>first</rdf:li>
+        <rdf:li>second</rdf:li>
+      </rdf:Bag>
+    </ex:container>
+    <ex:reified rdf:ID="stmt">statement object</ex:reified>
+  </ex:Thing>
+</rdf:RDF>
+""",
+	base: "http://example.com/doc.rdf",
+);
+rdfxml_more_store.add_quads(rdfxml_more);
+let rdfxml_subject := rdf_iri("http://example.com/base/#thing");
+is(
+	rdfxml_more_store.find(
+		rdfxml_subject,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri("http://example.com/Thing"),
+	).length(),
+	1,
+	"RDF/XML typed node element emits rdf:type",
+);
+is(
+	rdfxml_more_store.find(
+		rdfxml_subject,
+		rdf_iri("http://example.com/name"),
+	)[0].get_object().get_lang(),
+	"cy",
+	"RDF/XML inherits xml:lang",
+);
+is(
+	rdfxml_more.grep(
+		fn q -> q.get_predicate().get_value() eq "http://example.com/label",
+	)[0].get_object().get_value(),
+	"Café",
+	"RDF/XML parses non-ASCII namespace-aware property attributes",
+);
+is(
+	rdfxml_more.grep(
+		fn q -> q.get_predicate().get_value() eq "http://example.com/name",
+	)[0].get_object().get_value(),
+	"Enw ☃",
+	"RDF/XML parses non-ASCII literal text",
+);
+is(
+	rdfxml_more_store.find(
+		rdfxml_subject,
+		rdf_iri("http://example.com/link"),
+	)[0].get_object().get_value(),
+	"http://example.com/base/other",
+	"RDF/XML resolves rdf:resource against xml:base",
+);
+let rdfxml_link := rdf_iri("http://example.com/base/other");
+is(
+	rdfxml_more_store.find(
+		rdfxml_link,
+		rdf_iri("http://example.com/role"),
+	)[0].get_object().get_value(),
+	"friend",
+	"RDF/XML parses empty property element property attributes",
+);
+let rdfxml_inner := rdfxml_more_store.find(
+	rdfxml_subject,
+	rdf_iri("http://example.com/inner"),
+)[0].get_object();
+is(
+	rdfxml_more_store.find(
+		rdfxml_inner,
+		rdf_iri("http://example.com/value"),
+	)[0].get_object().get_value(),
+	"inside",
+	"RDF/XML parseType Resource creates blank node",
+);
+let rdfxml_list := rdfxml_more_store.find(
+	rdfxml_subject,
+	rdf_iri("http://example.com/list"),
+)[0].get_object();
+is(
+	rdfxml_more_store.find(
+		rdfxml_list,
+		rdf_iri(RDF_NS _ "first"),
+	)[0].get_object().get_value(),
+	"http://example.com/base/item1",
+	"RDF/XML parseType Collection creates RDF list",
+);
+is(
+	rdfxml_more_store.find(
+		rdfxml_subject,
+		rdf_iri("http://example.com/xml"),
+	)[0].get_object().get_datatype().get_value(),
+	RDF_NS _ "XMLLiteral",
+	"RDF/XML parseType Literal creates XMLLiteral",
+);
+like(
+	rdfxml_more.grep(
+		fn q -> q.get_predicate().get_value() eq "http://example.com/xml",
+	)[0].get_object().get_value(),
+	/Ω/,
+	"RDF/XML parseType Literal preserves non-ASCII XML",
+);
+let rdfxml_bag := rdfxml_more_store.find(
+	null,
+	rdf_iri(RDF_NS _ "type"),
+	rdf_iri(RDF_NS _ "Bag"),
+)[0].get_subject();
+is(
+	rdfxml_more_store.find(
+		rdfxml_bag,
+		rdf_iri(RDF_NS _ "_2"),
+	)[0].get_object().get_value(),
+	"second",
+	"RDF/XML expands rdf:li containers",
+);
+let rdfxml_stmt := rdf_iri("http://example.com/base/#stmt");
+is(
+	rdfxml_more_store.find(
+		rdfxml_stmt,
+		rdf_iri(RDF_NS _ "subject"),
+		rdfxml_subject,
+	).length(),
+	1,
+	"RDF/XML rdf:ID on property element reifies statement",
+);
+like(
+	exception( function () {
+		rdfxml_parser.parse_string("""
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:ID="dup" />
+  <rdf:Description rdf:ID="dup" />
+</rdf:RDF>
+""");
+	} ),
+	/duplicate rdf:ID/,
+	"RDF/XML rejects duplicate rdf:ID",
+);
+like(
+	exception( function () {
+		rdfxml_parser.parse_string("""
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="s" rdf:nodeID="b" />
+</rdf:RDF>
+""");
+	} ),
+	/multiple subject attributes/,
+	"RDF/XML rejects conflicting subject attributes",
+);
+
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+store.add_quad(quad);
+store.add_quads(turtle);
+store.add_quads(nq);
+ok( store.verify_schema(), "store verifies installed schema" );
+is( store.find(ex_s).length(), 3, "store finds quads by subject" );
+like(
+	exception( function () {
+		new RDFStore(backend: "oracle");
+	} ),
+	/unsupported backend/,
+	"store rejects unsupported backend labels",
+);
+
+let file_store := new RDFStore(dbh: DB.temp());
+file_store.install_schema();
+let turtle_file := Path.tempfile();
+turtle_file.spew_utf8("""
+@prefix ex: <http://example.com/> .
+ex:file ex:p "from file" .
+""");
+is(
+	turtle_parser.parse_file( turtle_file, into: file_store ),
+	file_store,
+	"parse_file into store returns the target store",
+);
+is( file_store.find(rdf_iri("http://example.com/file")).length(), 1, "parse_file loads into store" );
+
+let result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:s ex:p ?o . }
+""",
+);
+is( result{type}, "select", "SPARQL returns select result" );
+is( result{results}.length(), 2, "SPARQL matches graph pattern" );
+let sparql_values := [
+	result{results}[0]{o}.get_value(),
+	result{results}[1]{o}.get_value(),
+];
+ok( "value" in sparql_values, "SPARQL binds stored literal" );
+ok( "from turtle" in sparql_values, "SPARQL binds Turtle literal" );
+
+let ask := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+ASK WHERE { ex:s ex:p "from turtle" . }
+""",
+);
+ok( ask{boolean}, "SPARQL ASK succeeds" );
+
+let graph_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { GRAPH <http://example.com/g> { ex:s ex:p ?o . } }
+""",
+);
+is( graph_result{results}.length(), 1, "SPARQL GRAPH restricts graph" );
+is( graph_result{results}[0]{o}.get_value(), "v", "SPARQL GRAPH binds named graph object" );
+
+let optional_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o ?missing WHERE {
+	ex:s ex:p ?o .
+	OPTIONAL { ex:s ex:missing ?missing . }
+}
+ORDER BY ?o
+LIMIT 1
+""",
+);
+is( optional_result{results}.length(), 1, "SPARQL LIMIT trims results" );
+is( optional_result{results}[0]{missing}, null, "SPARQL OPTIONAL leaves missing bindings null" );
+
+let filtered_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT DISTINCT ?o WHERE {
+	ex:s ex:p ?o .
+	FILTER(?o != "value"@en)
+}
+ORDER BY ?o
+""",
+);
+is( filtered_result{results}.length(), 1, "SPARQL FILTER and DISTINCT filter results" );
+is( filtered_result{results}[0]{o}.get_value(), "from turtle", "SPARQL FILTER keeps expected value" );
+
+let select_all_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT * WHERE { ex:s ex:p ?o . }
+LIMIT 1
+""",
+);
+ok( "o" in select_all_result{variables}, "SPARQL SELECT * projects bound variables" );
+ok( select_all_result{results}[0]{o} != null, "SPARQL SELECT * returns projected binding" );
+
+let sparql_semicolon_store := new RDFStore(dbh: DB.temp());
+sparql_semicolon_store.install_schema();
+sparql_semicolon_store.add_quads(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:item ex:p "match"; ex:q "side" .
+ex:other ex:p "miss"; ex:q "side" .
+"""));
+let values_result := sparql_query(
+	sparql_semicolon_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s ?o WHERE {
+	?s ex:p ?o;
+		ex:q "side" .
+}
+VALUES ?o { "match" }
+""",
+);
+is( values_result{results}.length(), 1, "SPARQL VALUES filters solution mappings" );
+is(
+	values_result{results}[0]{s}.get_value(),
+	"http://example.com/item",
+	"SPARQL semicolon abbreviation preserves subject",
+);
+
+let bind_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?copy WHERE {
+	ex:s ex:p ?o .
+	FILTER(?o = "from turtle")
+	BIND(?o AS ?copy)
+}
+""",
+);
+is( bind_result{results}.length(), 1, "SPARQL BIND keeps row count" );
+is(
+	bind_result{results}[0]{copy}.get_value(),
+	"from turtle",
+	"SPARQL BIND assigns expression result",
+);
+
+let alias_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT (STR(?o) AS ?text) WHERE {
+	ex:s ex:p ?o .
+	FILTER(?o = "from turtle")
+}
+""",
+);
+is(
+	alias_result{results}[0]{text}.get_value(),
+	"from turtle",
+	"SPARQL SELECT expression alias is projected",
+);
+
+let union_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE {
+	{ ex:s ex:p ?o . FILTER(?o = "from turtle") }
+	UNION
+	{ GRAPH <http://example.com/g> { ex:s ex:p ?o . } }
+}
+ORDER BY ?o
+""",
+);
+is( union_result{results}.length(), 2, "SPARQL UNION combines branches" );
+is( union_result{results}[1]{o}.get_value(), "v", "SPARQL UNION keeps graph branch" );
+
+let graph_var_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?g ?o WHERE { GRAPH ?g { ex:s ex:p ?o . } }
+""",
+);
+is( graph_var_result{results}.length(), 1, "SPARQL GRAPH variable scans named graphs" );
+is(
+	graph_var_result{results}[0]{g}.get_value(),
+	"http://example.com/g",
+	"SPARQL GRAPH variable binds graph name",
+);
+
+let named_dataset_store := new RDFStore(dbh: DB.temp());
+named_dataset_store.install_schema();
+named_dataset_store.add_quad(rdf_quad(
+	rdf_iri("http://example.com/s"),
+	rdf_iri("http://example.com/p"),
+	rdf_literal("one"),
+	rdf_iri("http://example.com/g1"),
+));
+named_dataset_store.add_quad(rdf_quad(
+	rdf_iri("http://example.com/s"),
+	rdf_iri("http://example.com/p"),
+	rdf_literal("two"),
+	rdf_iri("http://example.com/g2"),
+));
+named_dataset_store.add_quad(rdf_quad(
+	rdf_iri("http://example.com/dup"),
+	rdf_iri("http://example.com/p"),
+	rdf_literal("same"),
+	rdf_iri("http://example.com/g1"),
+));
+named_dataset_store.add_quad(rdf_quad(
+	rdf_iri("http://example.com/dup"),
+	rdf_iri("http://example.com/p"),
+	rdf_literal("same"),
+	rdf_iri("http://example.com/g2"),
+));
+let named_dataset_result := sparql_query(
+	named_dataset_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?g ?o
+FROM NAMED ex:g1
+WHERE { GRAPH ?g { ex:s ex:p ?o . } }
+""",
+);
+is(
+	named_dataset_result{results}.length(),
+	1,
+	"SPARQL FROM NAMED restricts GRAPH variable enumeration",
+);
+is(
+	named_dataset_result{results}[0]{o}.get_value(),
+	"one",
+	"SPARQL FROM NAMED keeps listed graph data",
+);
+let named_dataset_blocked := sparql_query(
+	named_dataset_store,
+	"""
+PREFIX ex: <http://example.com/>
+ASK
+FROM NAMED ex:g1
+WHERE { GRAPH ex:g2 { ex:s ex:p "two" . } }
+""",
+);
+ok(
+	not named_dataset_blocked{boolean},
+	"SPARQL FROM NAMED excludes unlisted explicit graphs",
+);
+let default_dataset_result := sparql_query(
+	named_dataset_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s ?o
+FROM ex:g1
+FROM ex:g2
+WHERE { ?s ex:p ?o . }
+ORDER BY ?s ?o
+""",
+);
+is(
+	default_dataset_result{results}.length(),
+	3,
+	"SPARQL FROM evaluates a merged default graph",
+);
+let subquery_dataset_result := sparql_query(
+	named_dataset_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o
+FROM ex:g1
+WHERE { { SELECT ?o WHERE { ex:s ex:p ?o . } } }
+""",
+);
+is(
+	subquery_dataset_result{results}.length(),
+	1,
+	"SPARQL subqueries inherit the active dataset",
+);
+
+let service_silent_result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE {
+	ex:s ex:p ?o .
+	SERVICE SILENT ?endpoint { ?x ?y ?z . }
+}
+""",
+);
+is(
+	service_silent_result{results}.length(),
+	2,
+	"SPARQL SERVICE SILENT preserves rows when endpoint is unbound",
+);
+let service_error_ok := false;
+try {
+	sparql_query(
+		store,
+		"""
+PREFIX ex: <http://example.com/>
+ASK WHERE {
+	ex:s ex:p ?o .
+	SERVICE ?endpoint { ?x ?y ?z . }
+}
+""",
+	);
+}
+catch {
+	service_error_ok := true;
+}
+ok(
+	service_error_ok,
+	"SPARQL SERVICE without SILENT rejects unbound endpoint",
+);
+
+let minus_store := new RDFStore(dbh: DB.temp());
+minus_store.install_schema();
+minus_store.add_quads(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:keep ex:p "keep" .
+ex:drop ex:p "drop"; ex:q true .
+"""));
+let minus_result := sparql_query(
+	minus_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s WHERE {
+	?s ex:p ?o .
+	MINUS { ?s ex:q true . }
+}
+""",
+);
+is( minus_result{results}.length(), 1, "SPARQL MINUS removes compatible rows" );
+is(
+	minus_result{results}[0]{s}.get_value(),
+	"http://example.com/keep",
+	"SPARQL MINUS keeps unmatched row",
+);
+
+let exists_result := sparql_query(
+	minus_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s WHERE {
+	?s ex:p ?o .
+	FILTER EXISTS { ?s ex:q true . }
+}
+""",
+);
+is( exists_result{results}.length(), 1, "SPARQL FILTER EXISTS keeps matching rows" );
+is(
+	exists_result{results}[0]{s}.get_value(),
+	"http://example.com/drop",
+	"SPARQL FILTER EXISTS keeps expected subject",
+);
+
+let not_exists_result := sparql_query(
+	minus_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s WHERE {
+	?s ex:p ?o .
+	FILTER NOT EXISTS { ?s ex:q true . }
+}
+""",
+);
+is( not_exists_result{results}.length(), 1, "SPARQL FILTER NOT EXISTS removes matching rows" );
+is(
+	not_exists_result{results}[0]{s}.get_value(),
+	"http://example.com/keep",
+	"SPARQL FILTER NOT EXISTS keeps expected subject",
+);
+
+let path_store := new RDFStore(dbh: DB.temp());
+path_store.install_schema();
+path_store.add_quads(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:a ex:p1 ex:b;
+	ex:p2 ex:d;
+	ex:p4 ex:z .
+ex:b ex:p3 ex:c .
+ex:d ex:p3 ex:c .
+ex:e ex:p1 ex:a .
+"""));
+
+let path_sequence_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:a ex:p1/ex:p3 ?o . }
+""",
+);
+is( path_sequence_result{results}.length(), 1, "SPARQL property path sequence matches" );
+is(
+	path_sequence_result{results}[0]{o}.get_value(),
+	"http://example.com/c",
+	"SPARQL property path sequence binds endpoint",
+);
+
+let path_alt_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:a (ex:p1|ex:p2)/ex:p3 ?o . }
+ORDER BY ?o
+""",
+);
+is(
+	path_alt_result{results}.length(),
+	2,
+	"SPARQL property path alternative preserves fixed-route duplicates",
+);
+
+let path_inverse_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s WHERE { ex:a ^ex:p1 ?s . }
+""",
+);
+is( path_inverse_result{results}.length(), 1, "SPARQL inverse property path matches" );
+is(
+	path_inverse_result{results}[0]{s}.get_value(),
+	"http://example.com/e",
+	"SPARQL inverse property path binds source",
+);
+
+let path_cardinality_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:a ex:p1/ex:p3? ?o . }
+ORDER BY ?o
+""",
+);
+is( path_cardinality_result{results}.length(), 2, "SPARQL ? property path includes zero and one step" );
+
+let path_star_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:a (ex:p1/ex:p3)* ?o . }
+""",
+);
+ok( path_star_result{results}.length() >= 2, "SPARQL * property path includes zero-length path" );
+
+let list_pattern_result := sparql_query(
+	turtle_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?head WHERE { ex:s2 ex:list ( "a" "b" ) . }
+""",
+);
+is(
+	list_pattern_result{results}.length(),
+	1,
+	"SPARQL RDF collection graph pattern matches stored list",
+);
+
+let path_negated_result := sparql_query(
+	path_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:a !(ex:p1|ex:p2) ?o . }
+""",
+);
+is( path_negated_result{results}.length(), 1, "SPARQL negated property set matches allowed edge" );
+is(
+	path_negated_result{results}[0]{o}.get_value(),
+	"http://example.com/z",
+	"SPARQL negated property set excludes listed predicates",
+);
+
+let aggregate_store := new RDFStore(dbh: DB.temp());
+aggregate_store.install_schema();
+aggregate_store.add_quads(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:a ex:value 1, 2, 2 .
+ex:b ex:value 5 .
+ex:b ex:label "bee" .
+"""));
+
+let count_result := sparql_query(
+	aggregate_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT (COUNT(?o) AS ?count) WHERE { ?s ex:value ?o . }
+""",
+);
+is( count_result{results}.length(), 1, "SPARQL aggregate COUNT returns one group" );
+is( count_result{results}[0]{count}.get_value(), "3", "SPARQL aggregate COUNT counts rows" );
+
+let grouped_count_result := sparql_query(
+	aggregate_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?s (COUNT(DISTINCT ?o) AS ?count) WHERE {
+	?s ex:value ?o .
+} GROUP BY ?s
+ORDER BY ?s
+""",
+);
+is( grouped_count_result{results}.length(), 2, "SPARQL GROUP BY creates one row per group" );
+is( grouped_count_result{results}[0]{count}.get_value(), "2", "SPARQL COUNT DISTINCT dedupes group values" );
+is( grouped_count_result{results}[1]{count}.get_value(), "1", "SPARQL COUNT DISTINCT handles singleton group" );
+
+let numeric_agg_result := sparql_query(
+	aggregate_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT (SUM(?o) AS ?sum) (AVG(?o) AS ?avg) (MIN(?o) AS ?min) (MAX(?o) AS ?max)
+WHERE { ?s ex:value ?o . }
+""",
+);
+is( numeric_agg_result{results}[0]{sum}.get_value(), "8", "SPARQL aggregate SUM totals numeric values" );
+is( numeric_agg_result{results}[0]{avg}.get_value(), "2.666666666667", "SPARQL aggregate AVG averages numeric values" );
+is( numeric_agg_result{results}[0]{min}.get_value(), "1", "SPARQL aggregate MIN keeps smallest term" );
+is( numeric_agg_result{results}[0]{max}.get_value(), "5", "SPARQL aggregate MAX keeps largest term" );
+
+let sample_result := sparql_query(
+	aggregate_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT (SAMPLE(?label) AS ?sample) WHERE { ?s ex:label ?label . }
+""",
+);
+is( sample_result{results}[0]{sample}.get_value(), "bee", "SPARQL aggregate SAMPLE returns a value" );
+
+let expression_store := new RDFStore(dbh: DB.temp());
+expression_store.install_schema();
+expression_store.add_quads(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:item ex:left 2;
+	ex:right 3;
+	ex:label "Bee"@en;
+	ex:typed "7"^^<http://www.w3.org/2001/XMLSchema#integer> .
+"""));
+
+let project_expression_result := sparql_query(
+	expression_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?sum ?twice ?dt ?lang ?upper ?lower ?length ?part ?chosen ?fallback WHERE {
+	ex:item ex:left ?left;
+		ex:right ?right;
+		ex:label ?label;
+		ex:typed ?typed .
+	BIND((?left + ?right) AS ?sum)
+	BIND((2 * ?sum) AS ?twice)
+	BIND(DATATYPE(?typed) AS ?dt)
+	BIND(LANG(?label) AS ?lang)
+	BIND(UCASE(?label) AS ?upper)
+	BIND(LCASE(?label) AS ?lower)
+	BIND(STRLEN(?label) AS ?length)
+	BIND(SUBSTR(?label, 2, 2) AS ?part)
+	BIND(IF(?left < ?right, "yes", "no") AS ?chosen)
+	BIND(COALESCE(?missing, "fallback") AS ?fallback)
+}
+""",
+);
+is( project_expression_result{results}[0]{sum}.get_value(), "5", "SPARQL expression addition works" );
+is( project_expression_result{results}[0]{twice}.get_value(), "10", "SPARQL expression multiplication can use prior binding" );
+is(
+	project_expression_result{results}[0]{dt}.get_value(),
+	XSD_NS _ "integer",
+	"SPARQL DATATYPE returns datatype IRI",
+);
+is( project_expression_result{results}[0]{lang}.get_value(), "en", "SPARQL LANG returns language tag" );
+is( project_expression_result{results}[0]{upper}.get_value(), "BEE", "SPARQL UCASE works" );
+is( project_expression_result{results}[0]{lower}.get_value(), "bee", "SPARQL LCASE works" );
+is( project_expression_result{results}[0]{upper}.get_lang(), "en", "SPARQL UCASE preserves language tag" );
+is( project_expression_result{results}[0]{length}.get_value(), "3", "SPARQL STRLEN works" );
+is( project_expression_result{results}[0]{part}.get_value(), "ee", "SPARQL SUBSTR works" );
+is( project_expression_result{results}[0]{part}.get_lang(), "en", "SPARQL SUBSTR preserves language tag" );
+is( project_expression_result{results}[0]{chosen}.get_value(), "yes", "SPARQL IF works" );
+is( project_expression_result{results}[0]{fallback}.get_value(), "fallback", "SPARQL COALESCE works" );
+
+let string_metadata_result := sparql_query(
+	expression_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?concat ?before ?after ?replace WHERE {
+	ex:item ex:label ?label .
+	BIND(CONCAT(?label, "s"@en) AS ?concat)
+	BIND(STRBEFORE(?label, "e") AS ?before)
+	BIND(STRAFTER(?label, "B") AS ?after)
+	BIND(REPLACE(?label, "e", "a") AS ?replace)
+}
+""",
+);
+is( string_metadata_result{results}[0]{concat}.get_lang(), "en", "SPARQL CONCAT preserves shared language tag" );
+is( string_metadata_result{results}[0]{before}.get_lang(), "en", "SPARQL STRBEFORE preserves language tag" );
+is( string_metadata_result{results}[0]{after}.get_lang(), "en", "SPARQL STRAFTER preserves language tag" );
+is( string_metadata_result{results}[0]{replace}.get_lang(), "en", "SPARQL REPLACE preserves language tag" );
+
+let function_filter_result := sparql_query(
+	expression_store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?label WHERE {
+	ex:item ex:label ?label .
+	FILTER CONTAINS(?label, "ee")
+}
+""",
+);
+is( function_filter_result{results}.length(), 1, "SPARQL FILTER function call works without outer parentheses" );
+
+let describe_direct := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+DESCRIBE ex:s
+""",
+);
+is(
+	describe_direct{quads}.length(),
+	3,
+	"SPARQL DESCRIBE can use an explicit target without WHERE",
+);
+let describe_variable := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+DESCRIBE ?s WHERE { ?s ex:p "from turtle" . }
+""",
+);
+is(
+	describe_variable{quads}.length(),
+	3,
+	"SPARQL DESCRIBE can describe a variable target from WHERE",
+);
+
+let parsed_update := sparql_parse("""
+PREFIX ex: <http://example.com/>
+INSERT DATA { ex:s ex:p "new" . }
+;
+DELETE WHERE { ?s ?p ?o . }
+""");
+is( parsed_update{type}, "update", "SPARQL parser accepts Update syntax" );
+is( parsed_update{operations}[0], "insert", "SPARQL parser records first Update operation" );
+is( parsed_update{operations}[1], "delete", "SPARQL parser records second Update operation" );
+
+like(
+	exception( function () {
+		sparql_query( store, "INSERT DATA { <a> <b> <c> . }" );
+	} ),
+	/SPARQL Update is not implemented/,
+	"SPARQL Update is reserved with stable diagnostic",
+);
+
+done_testing();

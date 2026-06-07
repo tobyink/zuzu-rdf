@@ -1,0 +1,83 @@
+# rdf
+
+RDF, Linked Data, and SPARQL tools for ZuzuScript.
+
+This trial distribution provides:
+
+- RDF term and quad value objects.
+- Parsers for N-Triples, N-Quads, Turtle, and RDF/XML.
+- Serializers for N-Triples and N-Quads.
+- A `std/db`-backed quad store for SQLite, MySQL, and PostgreSQL.
+- SPARQL 1.1 Query parsing and execution over stores.
+- SPARQL 1.1 Update syntax parsing.
+
+The first implementation is pure ZuzuScript and has no dependencies beyond
+the Zuzu interpreter and stdlib. The SPARQL parser accepts SPARQL 1.1
+Query and Update syntax. Query execution covers `SELECT`, `ASK`,
+`CONSTRUCT`, `DESCRIBE`, graph patterns, joins, `OPTIONAL`, `UNION`,
+`MINUS`, `FILTER` and `EXISTS`, `VALUES`, `BIND`, grouping, aggregates,
+projection expressions, property paths, dataset clauses, solution
+modifiers, built-in functions, and `SERVICE` queries. Update execution is
+intentionally left for a later stage, and the module boundaries are kept
+open so it can be added without replacing the parser.
+
+RDF/XML support includes the W3C RDF 1.1 RDF/XML positive and negative
+syntax test suite as author tests. The implementation covers typed node
+elements, `xml:base`, `xml:lang`, `rdf:ID`, `rdf:nodeID`, property
+attributes, `parseType` resource, collection, and XML literal forms, RDF
+lists, `rdf:li`, and RDF/XML reification.
+
+SPARQL author tests vendor the W3C SPARQL 1.1 Query and Update syntax
+conformance fixtures. Syntax runners cover the W3C positive and negative
+SPARQL 1.1 Query and Update syntax tests. Evaluation wrappers cover
+vendored W3C SPARQL 1.1 Query suites for aggregates, `BIND`, `VALUES`,
+casts, `CONSTRUCT`, `EXISTS` and negation, built-in functions, grouping,
+project expressions, property paths, and subqueries, with exact
+`SELECT`, `ASK`, and graph-result comparisons where applicable.
+
+## Example
+
+```zzs
+from rdf import RDFStore, TurtleParser, sparql_query;
+from std/db import DB;
+
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+store.add_quads(( new TurtleParser() ).parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "value" .
+"""));
+
+let result := sparql_query(store, """
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:s ex:p ?o . }
+""");
+```
+
+Use `sparql_parse` to parse Query or Update syntax without executing it:
+
+```zzs
+let parsed := sparql_parse("""
+INSERT DATA { <http://example.com/s> <http://example.com/p> "value" . }
+""");
+```
+
+Parsers are classes. Use `parse_string` to return quads, or `parse_file`
+with `into: store` to load directly into a store:
+
+```zzs
+let parser := new RdfXmlParser();
+parser.parse_file( somepath, into: store );
+```
+
+## Notes
+
+The normal test suite uses SQLite through `DB.temp()`. MySQL and
+PostgreSQL are intended to be covered by author tests using local
+`zuzutest` databases, following the stdlib `std/db` convention. Set
+`RDF_AUTHOR_MYSQL=1` or `RDF_AUTHOR_POSTGRESQL=1` under
+`AUTHOR_TESTING=1` to run those backend checks. DSNs may be overridden
+with `RDF_AUTHOR_MYSQL_DSN` and `RDF_AUTHOR_POSTGRESQL_DSN`.
+
+`zuzuzoo` discovers every `.zzs` file under `tests`, so there is no
+separate test runner script in the distribution.

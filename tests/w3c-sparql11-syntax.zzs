@@ -1,0 +1,69 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "fs" );
+
+from rdf import sparql_parse_query;
+from std/io import Path;
+from std/string import split, starts_with, trim;
+
+let root := new Path("tests/w3c/sparql/sparql11/syntax-query");
+let manifest_path := root.child("manifest.ttl");
+
+if ( not manifest_path.exists() ) {
+	pass("W3C SPARQL 1.1 syntax manifest not vendored");
+	done_testing();
+}
+
+function _manifest_cases ( String text ) {
+	let cases := [];
+	let current := null;
+	for ( let line in split( text, "\n" ) ) {
+		let clean := trim(line);
+		next if clean eq "" or starts_with( clean, "#" );
+		if ( clean ~ /^:([A-Za-z0-9_]+)\s+rdf:type\s+mf:([A-Za-z0-9]+)/ ) {
+			let m := clean ~ /^:([A-Za-z0-9_]+)\s+rdf:type\s+mf:([A-Za-z0-9]+)/;
+			current := { id: m[1], kind: m[2], action: "" };
+			cases.push(current);
+		}
+		next if current == null;
+		if ( clean ~ /mf:action\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:action\s+<([^>]+)>/;
+			current{action} := m[1];
+		}
+	}
+	return cases;
+}
+
+let cases := _manifest_cases(manifest_path.slurp_utf8());
+let positive_count := 0;
+let negative_count := 0;
+
+for ( let c in cases ) {
+	next if c{action} eq "";
+	let query := root.child(c{action}).slurp_utf8();
+	if ( c{kind} eq "PositiveSyntaxTest11" ) {
+		positive_count++;
+		is(
+			exception( function () {
+				sparql_parse_query(query);
+			} ),
+			null,
+			"W3C SPARQL 1.1 positive syntax " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "NegativeSyntaxTest11" ) {
+		negative_count++;
+		ok(
+			exception( function () {
+				sparql_parse_query(query);
+			} ),
+			"W3C SPARQL 1.1 negative syntax " _ c{id},
+		);
+	}
+}
+
+ok( positive_count > 0, "W3C SPARQL 1.1 positive syntax cases discovered" );
+ok( negative_count > 0, "W3C SPARQL 1.1 negative syntax cases discovered" );
+
+done_testing();

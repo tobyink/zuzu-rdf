@@ -1,0 +1,381 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/w3cresults - W3C SPARQL result-set comparison helpers.
+
+=cut
+
+from rdf/term import
+	RDFBlank,
+	RDFLiteral,
+	RDF_NS,
+	XSD_NS,
+	rdf_blank,
+	rdf_iri,
+	rdf_literal,
+	rdf_term_key;
+from rdf/parser/turtle import TurtleParser;
+from std/data/json import JSON;
+from std/data/xml import XML;
+from std/string import ends_with, index, join, split, starts_with, substr;
+
+function _w3c_result_bag_with_map;
+
+function _w3c_xml_literal_normalize ( String value ) {
+	return value unless starts_with( value, "<" );
+	let close := index( value, ">" );
+	return value if close < 0;
+	let start_tag := substr( value, 1, close - 1 );
+	let pieces := split( start_tag, " " );
+	return value if pieces.length() < 2;
+	let name := pieces[0];
+	return value unless substr( value, close + 1 ) eq "</" _ name _ ">";
+	let attrs := [];
+	let i := 1;
+	while ( i < pieces.length() ) {
+		attrs.push(pieces[i]);
+		i++;
+	}
+	return "<" _ name _ " " _ join(
+		" ",
+		attrs.sort( fn ( a, b ) -> a cmp b ),
+	) _ "></" _ name _ ">";
+}
+
+function _w3c_result_term_key ( term ) {
+	return "U|" if term == null;
+	return "B|" _ term.get_value() if term instanceof RDFBlank;
+	if ( term instanceof RDFLiteral ) {
+		let datatype := term.get_datatype().get_value();
+		if ( datatype eq XSD_NS _ "integer" or datatype eq XSD_NS _ "int" or
+			datatype eq XSD_NS _ "long" or datatype eq XSD_NS _ "short" or
+			datatype eq XSD_NS _ "byte" or datatype eq XSD_NS _ "decimal" or
+			datatype eq XSD_NS _ "double" or datatype eq XSD_NS _ "float"
+		) {
+			try {
+				return "N|" _ datatype _ "|" _ ( 0 + term.get_value() );
+			}
+			catch {
+			}
+		}
+	}
+	return rdf_term_key(term);
+}
+
+function _w3c_graph_term_key_with_map ( term, Dict map ) {
+	if ( term instanceof RDFBlank ) {
+		return "B|" _ map.get(term.get_value(), term.get_value());
+	}
+	if ( term instanceof RDFLiteral and
+		term.get_datatype().get_value() eq RDF_NS _ "XMLLiteral" ) {
+		return rdf_term_key(rdf_literal(
+			_w3c_xml_literal_normalize(term.get_value()),
+			"",
+			rdf_iri(RDF_NS _ "XMLLiteral"),
+		));
+	}
+	return rdf_term_key(term);
+}
+
+function _w3c_graph_quad_key_with_map ( quad, Dict map ) {
+	return join( "\t", [
+		_w3c_graph_term_key_with_map( quad.get_subject(), map ),
+		_w3c_graph_term_key_with_map( quad.get_predicate(), map ),
+		_w3c_graph_term_key_with_map( quad.get_object(), map ),
+		_w3c_graph_term_key_with_map( quad.get_graph(), map ),
+	] );
+}
+
+function _w3c_graph_keys ( Array quads, Dict map ) {
+	return quads.map(
+		fn q -> _w3c_graph_quad_key_with_map( q, map ),
+	).sort( fn ( a, b ) -> a cmp b );
+}
+
+function _w3c_graph_blank_names ( Array quads ) {
+	let seen := {};
+	let out := [];
+	for ( let q in quads ) {
+		for ( let term in q.to_Array() ) {
+			next unless term instanceof RDFBlank;
+			next if seen.exists(term.get_value());
+			seen.set( term.get_value(), true );
+			out.push(term.get_value());
+		}
+	}
+	return out;
+}
+
+function _w3c_graph_mapping_matches (
+	Array actual,
+	Array expected,
+	Array actual_blanks,
+	Array expected_blanks,
+	Dict map,
+	Dict used,
+	Number ix
+) {
+	if ( ix >= actual_blanks.length() ) {
+		return _w3c_graph_keys( actual, map ) == _w3c_graph_keys( expected, {} );
+	}
+	let actual_name := actual_blanks[ix];
+	for ( let expected_name in expected_blanks ) {
+		next if used.exists(expected_name);
+		map.set( actual_name, expected_name );
+		used.set( expected_name, true );
+		return true if _w3c_graph_mapping_matches(
+			actual,
+			expected,
+			actual_blanks,
+			expected_blanks,
+			map,
+			used,
+			ix + 1,
+		);
+		used.remove(expected_name);
+	}
+	return false;
+}
+
+function sparql_w3c_graph_match ( Array actual, Array expected ) {
+	return false if actual.length() != expected.length();
+	let actual_blanks := _w3c_graph_blank_names(actual);
+	let expected_blanks := _w3c_graph_blank_names(expected);
+	return false if actual_blanks.length() != expected_blanks.length();
+	return _w3c_graph_mapping_matches(
+		actual,
+		expected,
+		actual_blanks,
+		expected_blanks,
+		{},
+		{},
+		0,
+	);
+}
+
+function sparql_w3c_graph_match_file ( actual, path ) {
+	return false unless actual.exists("quads");
+	return sparql_w3c_graph_match(
+		actual{quads},
+		( new TurtleParser() ).parse_file(path),
+	);
+}
+
+function _w3c_xml_term ( node ) {
+	let name := node.localName();
+	if ( name eq "uri" ) {
+		return rdf_iri(node.textContent());
+	}
+	if ( name eq "bnode" ) {
+		return rdf_blank(node.textContent());
+	}
+	if ( name eq "literal" ) {
+		let lang := node.getAttribute("xml:lang");
+		lang := node.getAttribute("lang") if lang eq "";
+		let datatype := node.getAttribute("datatype");
+		return rdf_literal(
+			node.textContent(),
+			lang,
+			datatype eq "" ? null : rdf_iri(datatype),
+		);
+	}
+	return null;
+}
+
+function _w3c_json_term ( item ) {
+	let kind := item.get( "type", "" );
+	if ( kind eq "uri" ) {
+		return rdf_iri(item{value});
+	}
+	if ( kind eq "bnode" ) {
+		return rdf_blank(item{value});
+	}
+	if ( kind eq "literal" or kind eq "typed-literal" ) {
+		let lang := item.get( "xml:lang", item.get( "lang", "" ) );
+		let datatype := item.exists("datatype")
+			? rdf_iri(item{datatype})
+			: null;
+		return rdf_literal( item{value}, lang, datatype );
+	}
+	return null;
+}
+
+function _w3c_read_srx ( path ) {
+	let doc := XML.parse(path.slurp_utf8());
+	let boolean := doc.findvalue(
+		"/*[local-name()='sparql']/*[local-name()='boolean']",
+	);
+	if ( boolean ne "" ) {
+		return { type: "ask", boolean: lc(boolean) eq "true" };
+	}
+	let vars := [];
+	for ( let var in doc.findnodes(
+		"/*[local-name()='sparql']/*[local-name()='head']" _
+		"/*[local-name()='variable']",
+	) ) {
+		vars.push(var.getAttribute("name"));
+	}
+	let rows := [];
+	for ( let result in doc.findnodes(
+		"/*[local-name()='sparql']/*[local-name()='results']" _
+		"/*[local-name()='result']",
+	) ) {
+		let row := {};
+		for ( let binding in result.findnodes("*[local-name()='binding']") ) {
+			let children := binding.children();
+			next if children.length() == 0;
+			row.set(
+				binding.getAttribute("name"),
+				_w3c_xml_term(children[0]),
+			);
+		}
+		rows.push(row);
+	}
+	return { type: "select", variables: vars, results: rows };
+}
+
+function _w3c_read_srj ( path ) {
+	let data := ( new JSON() ).decode(path.slurp_utf8());
+	if ( data.exists("boolean") ) {
+		return { type: "ask", boolean: data{boolean} ? true : false };
+	}
+	let rows := [];
+	for ( let result in data{results}{bindings} ) {
+		let row := {};
+		for ( let key in result.keys() ) {
+			row.set( key, _w3c_json_term(result.get(key)) );
+		}
+		rows.push(row);
+	}
+	return {
+		type: "select",
+		variables: data{head}.get( "vars", [] ),
+		results: rows,
+	};
+}
+
+function sparql_w3c_read_results ( path ) {
+	let text := "" _ path;
+	return _w3c_read_srj(path) if ends_with( text, ".srj" );
+	return _w3c_read_srx(path);
+}
+
+function _w3c_row_key ( Dict row, Array vars ) {
+	let parts := [];
+	let bnodes := {};
+	let bnode_index := 0;
+	for ( let var in vars ) {
+		let term := row.get( var, null );
+		if ( term instanceof RDFBlank ) {
+			if ( not bnodes.exists(term.get_value()) ) {
+				bnodes.set( term.get_value(), "b" _ bnode_index );
+				bnode_index++;
+			}
+			parts.push(var _ "=B|" _ bnodes.get(term.get_value()));
+		}
+		else {
+			parts.push(var _ "=" _ _w3c_result_term_key(term));
+		}
+	}
+	return join( "\n", parts );
+}
+
+function _w3c_result_bag ( Array rows, Array vars ) {
+	return _w3c_result_bag_with_map( rows, vars, {} );
+}
+
+function _w3c_result_bag_with_map ( Array rows, Array vars, Dict map ) {
+	let bag := {};
+	for ( let row in rows ) {
+		let key := _w3c_row_key( row, vars );
+		bag.set( key, bag.get( key, 0 ) + 1 );
+	}
+	return bag;
+}
+
+function _w3c_same_bag ( left, right ) {
+	return false unless left.keys().length() == right.keys().length();
+	for ( let key in left.keys() ) {
+		return false unless right.exists(key);
+		return false unless left.get(key) == right.get(key);
+	}
+	return true;
+}
+
+function _w3c_result_blank_names ( Array rows ) {
+	let seen := {};
+	let out := [];
+	for ( let row in rows ) {
+		for ( let key in row.keys() ) {
+			let term := row.get(key);
+			next unless term instanceof RDFBlank;
+			next if seen.exists(term.get_value());
+			seen.set( term.get_value(), true );
+			out.push(term.get_value());
+		}
+	}
+	return out;
+}
+
+function _w3c_select_mapping_matches (
+	Array actual_rows,
+	Array expected_rows,
+	Array vars,
+	Array actual_blanks,
+	Array expected_blanks,
+	Dict map,
+	Dict used,
+	Number ix
+) {
+	if ( ix >= actual_blanks.length() ) {
+		return _w3c_same_bag(
+			_w3c_result_bag_with_map( actual_rows, vars, map ),
+			_w3c_result_bag_with_map( expected_rows, vars, {} ),
+		);
+	}
+	let actual_name := actual_blanks[ix];
+	for ( let expected_name in expected_blanks ) {
+		next if used.exists(expected_name);
+		map.set( actual_name, expected_name );
+		used.set( expected_name, true );
+		return true if _w3c_select_mapping_matches(
+			actual_rows,
+			expected_rows,
+			vars,
+			actual_blanks,
+			expected_blanks,
+			map,
+			used,
+			ix + 1,
+		);
+		used.remove(expected_name);
+	}
+	return false;
+}
+
+function _w3c_select_same_results ( Array actual_rows, Array expected_rows,
+	Array vars ) {
+	return _w3c_same_bag(
+		_w3c_result_bag( actual_rows, vars ),
+		_w3c_result_bag( expected_rows, vars ),
+	);
+}
+
+function sparql_w3c_results_match ( actual, expected ) {
+	return actual{boolean} == expected{boolean}
+		if expected{type} eq "ask";
+	return false unless actual{type} eq "select";
+	return _w3c_select_same_results(
+		actual{results},
+		expected{results},
+		expected{variables},
+	);
+}
+
+function sparql_w3c_results_match_file ( actual, path ) {
+	return sparql_w3c_results_match(
+		actual,
+		sparql_w3c_read_results(path),
+	);
+}

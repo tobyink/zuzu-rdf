@@ -1,0 +1,91 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, rdf_iri, rdf_quad, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/exists");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 EXISTS manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _store_with_graph ( String data_file, String graph_file, graph := null ) {
+	let store := _store(data_file);
+	let graph_term := graph == null ? rdf_iri(graph_file) : graph;
+	for ( let quad in ( new TurtleParser() ).parse_file(root.child(graph_file)) ) {
+		store.add_quad(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph_term,
+		));
+	}
+	return store;
+}
+
+function _run ( RDFStore store, String query_file ) {
+	return sparql_query(
+		store,
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( RDFStore store, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( store, query_file ),
+		root.child(result_file),
+	);
+}
+
+ok(
+	_matches( _store("exists01.ttl"), "exists01.rq", "exists01.srx" ),
+	"W3C EXISTS exists01 exact results",
+);
+ok(
+	_matches( _store("exists01.ttl"), "exists02.rq", "exists02.srx" ),
+	"W3C EXISTS exists02 exact results",
+);
+ok(
+	_matches(
+		_store_with_graph( "exists01.ttl", "exists02.ttl" ),
+		"exists03.rq",
+		"exists03.srx",
+	),
+	"W3C EXISTS exists03 graph exact results",
+);
+ok(
+	_matches( _store("exists01.ttl"), "exists04.rq", "exists04.srx" ),
+	"W3C EXISTS exists04 nested exact results",
+);
+ok(
+	_matches( _store("exists01.ttl"), "exists05.rq", "exists05.srx" ),
+	"W3C EXISTS exists05 nested negative exact results",
+);
+ok(
+	_matches(
+		_store_with_graph(
+			"exists-graph-variable.ttl",
+			"exists-graph-variable.ttl",
+			rdf_iri(""),
+		),
+		"exists-graph-variable.rq",
+		"exists-graph-variable.srx",
+	),
+	"W3C EXISTS graph variable exact results",
+);
+
+done_testing();

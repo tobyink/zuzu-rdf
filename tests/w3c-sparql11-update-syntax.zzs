@@ -1,0 +1,86 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "fs" );
+
+from rdf import sparql_parse;
+from std/io import Path;
+from std/string import split, starts_with, trim;
+
+let root := new Path("tests/w3c/sparql/sparql11");
+let manifest_dirs := [ "syntax-update-1", "syntax-update-2" ];
+
+if ( not root.child("syntax-update-1").child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 Update syntax manifests not vendored");
+	done_testing();
+}
+
+function _manifest_cases ( String text ) {
+	let cases := [];
+	let current := null;
+	let in_entries := false;
+	for ( let line in split( text, "\n" ) ) {
+		let clean := trim(line);
+		next if clean eq "" or starts_with( clean, "#" );
+		if ( clean ~ /mf:entries/ ) {
+			in_entries := true;
+			next;
+		}
+		if ( in_entries ) {
+			in_entries := false if clean eq ") .";
+			next;
+		}
+		if ( clean ~ /^:([A-Za-z0-9_-]+)/ ) {
+			let m := clean ~ /^:([A-Za-z0-9_-]+)/;
+			current := { id: m[1], kind: "", action: "" };
+			cases.push(current);
+		}
+		next if current == null;
+		if ( clean ~ /rdf:type\s+mf:(PositiveUpdateSyntaxTest11|NegativeUpdateSyntaxTest11)/ ) {
+			let m := clean ~ /rdf:type\s+mf:(PositiveUpdateSyntaxTest11|NegativeUpdateSyntaxTest11)/;
+			current{kind} := m[1];
+		}
+		if ( clean ~ /mf:action\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:action\s+<([^>]+)>/;
+			current{action} := m[1];
+		}
+	}
+	return cases;
+}
+
+let positive_count := 0;
+let negative_count := 0;
+
+for ( let dir_name in manifest_dirs ) {
+	let dir := root.child(dir_name);
+	let cases := _manifest_cases(dir.child("manifest.ttl").slurp_utf8());
+	for ( let c in cases ) {
+		next if c{action} eq "" or c{kind} eq "";
+		let update := dir.child(c{action}).slurp_utf8();
+		if ( c{kind} eq "PositiveUpdateSyntaxTest11" ) {
+			positive_count++;
+			is(
+				exception( function () {
+					let parsed := sparql_parse(update);
+					die "not update" unless parsed{type} eq "update";
+				} ),
+				null,
+				"W3C SPARQL 1.1 positive Update syntax " _ dir_name _ "/" _ c{id},
+			);
+		}
+		else if ( c{kind} eq "NegativeUpdateSyntaxTest11" ) {
+			negative_count++;
+			ok(
+				exception( function () {
+					sparql_parse(update);
+				} ),
+				"W3C SPARQL 1.1 negative Update syntax " _ dir_name _ "/" _ c{id},
+			);
+		}
+	}
+}
+
+ok( positive_count > 0, "W3C SPARQL 1.1 positive Update syntax cases discovered" );
+ok( negative_count > 0, "W3C SPARQL 1.1 negative Update syntax cases discovered" );
+
+done_testing();

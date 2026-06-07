@@ -1,0 +1,86 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, rdf_iri, rdf_quad, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/negation");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 negation manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _named_store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	let graph := rdf_iri("urn:w3c:sparql11:negation:" _ data_file);
+	for ( let quad in ( new TurtleParser() ).parse_file(root.child(data_file)) ) {
+		store.add_quad(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph,
+		));
+	}
+	return store;
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		sparql_query(
+			_store(data_file),
+			root.child(query_file).slurp_utf8(),
+		),
+		root.child(result_file),
+	);
+}
+
+function _matches_named ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		sparql_query(
+			_named_store(data_file),
+			root.child(query_file).slurp_utf8(),
+		),
+		root.child(result_file),
+	);
+}
+
+for ( let item in [
+	[ "subsetByExcl.ttl", "subsetByExcl01.rq", "subsetByExcl01.srx" ],
+	[ "subsetByExcl.ttl", "subsetByExcl02.rq", "subsetByExcl02.srx" ],
+	[ "temporalProximity01.ttl", "temporalProximity01.rq",
+		"temporalProximity01.srx" ],
+	[ "set-data.ttl", "subset-01.rq", "subset-01.srx" ],
+	[ "set-data.ttl", "subset-02.rq", "subset-02.srx" ],
+	[ "set-data.ttl", "set-equals-1.rq", "set-equals-1.srx" ],
+	[ "set-data.ttl", "subset-03.rq", "subset-03.srx" ],
+	[ "set-data.ttl", "exists-01.rq", "exists-01.srx" ],
+	[ "set-data.ttl", "exists-02.rq", "exists-02.srx" ],
+	[ "full-minuend.ttl", "full-minuend.rq", "full-minuend.srx" ],
+	[ "part-minuend.ttl", "part-minuend.rq", "part-minuend.srx" ],
+] ) {
+	ok(
+		_matches( item[0], item[1], item[2] ),
+		"W3C negation " _ item[1] _ " exact results",
+	);
+}
+
+ok(
+	_matches_named( "graph-minus.ttl", "graph-minus.rq", "graph-minus.srx" ),
+	"W3C negation graph-minus exact results",
+);
+
+done_testing();

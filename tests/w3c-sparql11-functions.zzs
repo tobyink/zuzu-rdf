@@ -1,0 +1,136 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, NTriplesParser, TurtleParser, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+from std/string import ends_with;
+
+let root := new Path("tests/w3c/sparql/sparql11/functions");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 functions manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	return store if data_file eq "";
+	if ( ends_with( data_file, ".nt" ) ) {
+		( new NTriplesParser() ).parse_file(root.child(data_file), into: store);
+	}
+	else {
+		( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	}
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+for ( let item in [
+	[ "strdt01", "strdt01.rq", "data.ttl", "strdt01.srx" ],
+	[ "strdt02", "strdt02.rq", "data.ttl", "strdt02.srx" ],
+	[ "strdt03-rdf11", "strdt03.rq", "data.ttl", "strdt03-rdf11.srx" ],
+	[ "strlang01", "strlang01.rq", "data.ttl", "strlang01.srx" ],
+	[ "strlang02", "strlang02.rq", "data.ttl", "strlang02.srx" ],
+	[ "strlang03-rdf11", "strlang03.rq", "data.ttl", "strlang03-rdf11.srx" ],
+	[ "isnumeric01", "isnumeric01.rq", "data.ttl", "isnumeric01.srx" ],
+	[ "abs01", "abs01.rq", "data.ttl", "abs01.srx" ],
+	[ "ceil01", "ceil01.rq", "data.ttl", "ceil01.srx" ],
+	[ "floor01", "floor01.rq", "data.ttl", "floor01.srx" ],
+	[ "round01", "round01.rq", "data.ttl", "round01.srx" ],
+	[ "concat01", "concat01.rq", "data.ttl", "concat01.srx" ],
+	[ "concat02", "concat02.rq", "data2.ttl", "concat02.srx" ],
+	[ "concat-empty", "concat-empty.rq", "data.ttl", "concat-empty.srx" ],
+	[ "concat-single", "concat-single.rq", "data.ttl", "concat-single.srx" ],
+	[ "substring01", "substring01.rq", "data.ttl", "substring01.srx" ],
+	[ "substring01-non-bmp", "substring01.rq", "data5.ttl",
+		"substring01-non-bmp.srx" ],
+	[ "substring02", "substring02.rq", "data.ttl", "substring02.srx" ],
+	[ "substring02-non-bmp", "substring02.rq", "data5.ttl",
+		"substring02-non-bmp.srx" ],
+	[ "length01", "length01.rq", "data.ttl", "length01.srx" ],
+	[ "length01-non-bmp", "length01.rq", "data5.ttl",
+		"length01-non-bmp.srx" ],
+	[ "ucase01", "ucase01.rq", "data.ttl", "ucase01.srx" ],
+	[ "ucase01-non-bmp", "ucase01.rq", "data5.ttl",
+		"ucase01-non-bmp.srx" ],
+	[ "lcase01", "lcase01.rq", "data.ttl", "lcase01.srx" ],
+	[ "lcase01-non-bmp", "lcase01.rq", "data5.ttl",
+		"lcase01-non-bmp.srx" ],
+	[ "encode01", "encode01.rq", "data.ttl", "encode01.srx" ],
+	[ "encode01-non-bmp", "encode01.rq", "data5.ttl",
+		"encode01-non-bmp.srx" ],
+	[ "contains01", "contains01.rq", "data.ttl", "contains01.srx" ],
+	[ "starts01", "starts01.rq", "data.ttl", "starts01.srx" ],
+	[ "ends01", "ends01.rq", "data.ttl", "ends01.srx" ],
+	[ "md5-01", "md5-01.rq", "data.ttl", "md5-01.srx" ],
+	[ "md5-02", "md5-02.rq", "data.ttl", "md5-02.srx" ],
+	[ "sha1-01", "sha1-01.rq", "data.ttl", "sha1-01.srx" ],
+	[ "sha1-02", "sha1-02.rq", "hash-unicode.ttl", "sha1-02.srx" ],
+	[ "sha256-01", "sha256-01.rq", "data.ttl", "sha256-01.srx" ],
+	[ "sha256-02", "sha256-02.rq", "hash-unicode.ttl", "sha256-02.srx" ],
+	[ "sha384-01", "sha384-01.rq", "data.ttl", "sha384-01.srx" ],
+	[ "sha384-02", "sha384-02.rq", "hash-unicode.ttl", "sha384-02.srx" ],
+	[ "sha512-01", "sha512-01.rq", "data.ttl", "sha512-01.srx" ],
+	[ "sha512-02", "sha512-02.rq", "hash-unicode.ttl", "sha512-02.srx" ],
+	[ "hours", "hours-01.rq", "data.ttl", "hours-01.srx" ],
+	[ "minutes", "minutes-01.rq", "data.ttl", "minutes-01.srx" ],
+	[ "seconds", "seconds-01.rq", "data.ttl", "seconds-01.srx" ],
+	[ "year", "year-01.rq", "data.ttl", "year-01.srx" ],
+	[ "month", "month-01.rq", "data.ttl", "month-01.srx" ],
+	[ "day", "day-01.rq", "data.ttl", "day-01.srx" ],
+	[ "timezone", "timezone-01.rq", "data.ttl", "timezone-01.srx" ],
+	[ "tz", "tz-01.rq", "data.ttl", "tz-01.srx" ],
+	[ "bnode01", "bnode01.rq", "data.ttl", "bnode01.srx" ],
+	[ "in01", "in01.rq", "data.ttl", "in01.srx" ],
+	[ "in02", "in02.rq", "data.ttl", "in02.srx" ],
+	[ "notin01", "notin01.rq", "data.ttl", "notin01.srx" ],
+	[ "notin02", "notin02.rq", "data.ttl", "notin02.srx" ],
+	[ "now01", "now01.rq", "data.ttl", "now01.srx" ],
+	[ "rand01", "rand01.rq", "data.ttl", "rand01.srx" ],
+	[ "bnode02", "bnode02.rq", "data.ttl", "bnode02.srx" ],
+	[ "iri01", "iri01.rq", "data.ttl", "iri01.srx" ],
+	[ "iri02", "iri02.rq", "data.ttl", "iri02.srx" ],
+	[ "if01", "if01.rq", "data2.ttl", "if01.srx" ],
+	[ "if02", "if02.rq", "data2.ttl", "if02.srx" ],
+	[ "coalesce01", "coalesce01.rq", "data-coalesce.ttl", "coalesce01.srx" ],
+	[ "coalesce-empty", "coalesce-empty.rq", "data-coalesce.ttl",
+		"coalesce-empty.srx" ],
+	[ "strbefore01a", "strbefore01.rq", "data2.ttl", "strbefore01a.srx" ],
+	[ "strbefore02", "strbefore02.rq", "data4.ttl", "strbefore02.srx" ],
+	[ "strafter01a", "strafter01.rq", "data2.ttl", "strafter01a.srx" ],
+	[ "strafter02", "strafter02.rq", "data4.ttl", "strafter02.srx" ],
+	[ "replace01", "replace01.rq", "data3.ttl", "replace01.srx" ],
+	[ "replace02", "replace02.rq", "data3.ttl", "replace02.srx" ],
+	[ "replace03", "replace03.rq", "data3.ttl", "replace03.srx" ],
+	[ "replace-case-insensitive", "replace-case-insensitive.rq", "",
+		"replace-case-insensitive.srx" ],
+	[ "uuid01", "uuid01.rq", "data-empty.nt", "uuid01.srx" ],
+	[ "uuid02", "uuid02.rq", "data-empty.nt", "uuid02.srx" ],
+	[ "struuid01", "struuid01.rq", "data-empty.nt", "struuid01.srx" ],
+] ) {
+	ok(
+		_matches( item[2], item[1], item[3] ),
+		"W3C functions " _ item[0] _ " exact results",
+	);
+}
+
+done_testing();

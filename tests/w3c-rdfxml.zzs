@@ -1,0 +1,199 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "fs" );
+
+from rdf import
+	NTriplesParser,
+	RDFBlank,
+	RDFLiteral,
+	RDF_NS,
+	RdfXmlParser,
+	rdf_literal,
+	rdf_iri,
+	rdf_term_key;
+from std/io import Path;
+from std/string import index, join, split, starts_with, substr, trim;
+
+function _xml_literal_normalize;
+
+let root := new Path("tests/w3c/rdf/rdf11/rdf-xml");
+let manifest_path := root.child("manifest.ttl");
+
+if ( not manifest_path.exists() ) {
+	pass("W3C RDF/XML manifest not vendored");
+	done_testing();
+}
+
+function _manifest_cases ( String text ) {
+	let cases := [];
+	let current := null;
+	for ( let line in split( text, "\n" ) ) {
+		let clean := trim(line);
+		next if clean eq "" or starts_with( clean, "#" );
+		if ( clean ~ /^<#([^>]+)>/ ) {
+			let m := clean ~ /^<#([^>]+)>/;
+			current := { id: m[1], kind: "", action: "", result: "" };
+			cases.push(current);
+		}
+		next if current == null;
+		if ( clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/ ) {
+			let m := clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/;
+			current{kind} := m[1];
+		}
+		if ( clean ~ /mf:action\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:action\s+<([^>]+)>/;
+			current{action} := m[1];
+		}
+		if ( clean ~ /mf:result\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:result\s+<([^>]+)>/;
+			current{result} := m[1];
+		}
+	}
+	return cases;
+}
+
+function _term_key_with_map ( term, Dict map ) {
+	if ( term instanceof RDFBlank ) {
+		return "B|" _ map.get(term.get_value(), term.get_value());
+	}
+	if ( term instanceof RDFLiteral and
+		term.get_datatype().get_value() eq RDF_NS _ "XMLLiteral" ) {
+		return rdf_term_key(rdf_literal(
+			_xml_literal_normalize(term.get_value()),
+			"",
+			rdf_iri(RDF_NS _ "XMLLiteral"),
+		));
+	}
+	return rdf_term_key(term);
+}
+
+function _xml_literal_normalize ( String value ) {
+	return value unless starts_with( value, "<" );
+	let close := index( value, ">" );
+	return value if close < 0;
+	let start_tag := substr( value, 1, close - 1 );
+	let pieces := split( start_tag, " " );
+	return value if pieces.length() < 2;
+	let name := pieces[0];
+	return value unless substr( value, close + 1 ) eq "</" _ name _ ">";
+	let attrs := [];
+	let i := 1;
+	while ( i < pieces.length() ) {
+		attrs.push(pieces[i]);
+		i++;
+	}
+	return "<" _ name _ " " _ join(
+		" ",
+		attrs.sort( fn ( a, b ) -> a cmp b ),
+	) _ "></" _ name _ ">";
+}
+
+function _quad_key_with_map ( quad, Dict map ) {
+	return join( "\t", [
+		_term_key_with_map( quad.get_subject(), map ),
+		_term_key_with_map( quad.get_predicate(), map ),
+		_term_key_with_map( quad.get_object(), map ),
+		_term_key_with_map( quad.get_graph(), map ),
+	] );
+}
+
+function _graph_keys ( Array quads, Dict map ) {
+	return quads.map(
+		fn q -> _quad_key_with_map( q, map ),
+	).sort( fn ( a, b ) -> a cmp b );
+}
+
+function _blank_names ( Array quads ) {
+	let seen := {};
+	let out := [];
+	for ( let q in quads ) {
+		for ( let term in q.to_Array() ) {
+			next unless term instanceof RDFBlank;
+			next if seen.exists(term.get_value());
+			seen.set( term.get_value(), true );
+			out.push(term.get_value());
+		}
+	}
+	return out;
+}
+
+function _mapping_matches ( Array actual, Array expected, Array actual_blanks,
+	Array expected_blanks, Dict map, Dict used, Number ix ) {
+	if ( ix >= actual_blanks.length() ) {
+		return _graph_keys( actual, map ) == _graph_keys( expected, {} );
+	}
+	let actual_name := actual_blanks[ix];
+	for ( let expected_name in expected_blanks ) {
+		next if used.exists(expected_name);
+		map.set( actual_name, expected_name );
+		used.set( expected_name, true );
+		return true if _mapping_matches(
+			actual,
+			expected,
+			actual_blanks,
+			expected_blanks,
+			map,
+			used,
+			ix + 1,
+		);
+		used.remove(expected_name);
+	}
+	return false;
+}
+
+function graphs_match ( Array actual, Array expected ) {
+	return false if actual.length() != expected.length();
+	let actual_blanks := _blank_names(actual);
+	let expected_blanks := _blank_names(expected);
+	return false if actual_blanks.length() != expected_blanks.length();
+	return _mapping_matches(
+		actual,
+		expected,
+		actual_blanks,
+		expected_blanks,
+		{},
+		{},
+		0,
+	);
+}
+
+let manifest := manifest_path.slurp_utf8();
+let cases := _manifest_cases(manifest);
+let parser := new RdfXmlParser();
+let nt_parser := new NTriplesParser();
+let eval_count := 0;
+let negative_count := 0;
+
+for ( let c in cases ) {
+	next if c{action} eq "";
+	let action_path := root.child(c{action});
+	if ( c{kind} eq "XMLNegativeSyntax" ) {
+		negative_count++;
+		ok(
+			exception( function () {
+				parser.parse_file(
+					action_path,
+					base: "https://w3c.github.io/rdf-tests/rdf/rdf11/rdf-xml/" _
+						c{action},
+				);
+			} ),
+			"W3C RDF/XML negative syntax " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "XMLEval" and c{result} ne "" ) {
+		eval_count++;
+		let actual := parser.parse_file(
+			action_path,
+			base: "https://w3c.github.io/rdf-tests/rdf/rdf11/rdf-xml/" _
+				c{action},
+		);
+		let expected := nt_parser.parse_file(root.child(c{result}));
+		ok( graphs_match( actual, expected ), "W3C RDF/XML eval " _ c{id} );
+	}
+}
+
+ok( eval_count > 0, "W3C RDF/XML eval cases discovered" );
+ok( negative_count > 0, "W3C RDF/XML negative syntax cases discovered" );
+
+done_testing();

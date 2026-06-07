@@ -1,0 +1,2 @@
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:s ex:p ?o . }

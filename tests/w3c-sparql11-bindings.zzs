@@ -1,0 +1,114 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/bindings");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 bindings manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+let values01 := _run( "data01.ttl", "values01.rq" );
+is( values01{results}.length(), 1, "W3C SPARQL bindings values01 row count" );
+is(
+	values01{results}[0]{book}.get_value(),
+	"http://example.org/book/book1",
+	"W3C SPARQL bindings values01 selected book",
+);
+is(
+	values01{results}[0]{title}.get_value(),
+	"SPARQL Tutorial",
+	"W3C SPARQL bindings values01 selected title",
+);
+ok(
+	_matches( "data01.ttl", "values01.rq", "values01.srx" ),
+	"W3C SPARQL bindings values01 exact results",
+);
+ok(
+	_matches( "data02.ttl", "values02.rq", "values02.srx" ),
+	"W3C SPARQL bindings values02 exact results",
+);
+
+let inline01 := _run( "data01.ttl", "inline01.rq" );
+is( inline01{results}.length(), 1, "W3C SPARQL bindings inline01 row count" );
+is(
+	inline01{results}[0]{price}.get_value(),
+	"42",
+	"W3C SPARQL bindings inline01 selected price",
+);
+ok(
+	_matches( "data01.ttl", "inline01.rq", "inline01.srx" ),
+	"W3C SPARQL bindings inline01 exact results",
+);
+ok(
+	_matches( "data02.ttl", "inline02.rq", "inline02.srx" ),
+	"W3C SPARQL bindings inline02 exact results",
+);
+
+let values03 := _run( "data03.ttl", "values03.rq" );
+is( values03{results}.length(), 1, "W3C SPARQL bindings values03 row count" );
+is(
+	values03{results}[0]{o1}.get_value(),
+	"Alan",
+	"W3C SPARQL bindings values03 first value",
+);
+is(
+	values03{results}[0]{o2}.get_value(),
+	"alan@example.org",
+	"W3C SPARQL bindings values03 second value",
+);
+ok(
+	_matches( "data03.ttl", "values03.rq", "values03.srx" ),
+	"W3C SPARQL bindings values03 exact results",
+);
+ok(
+	_matches( "data04.ttl", "values04.rq", "values04.srx" ),
+	"W3C SPARQL bindings values04 exact results",
+);
+ok(
+	_matches( "data05.ttl", "values05.rq", "values05.srx" ),
+	"W3C SPARQL bindings values05 exact results",
+);
+ok(
+	_matches( "data06.ttl", "values06.rq", "values06.srx" ),
+	"W3C SPARQL bindings values06 exact results",
+);
+ok(
+	_matches( "data07.ttl", "values07.rq", "values07.srx" ),
+	"W3C SPARQL bindings values07 exact results",
+);
+ok(
+	_matches( "data08.ttl", "values08.rq", "values08.srx" ),
+	"W3C SPARQL bindings values08 exact results",
+);
+
+done_testing();

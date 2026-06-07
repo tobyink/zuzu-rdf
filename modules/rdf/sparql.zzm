@@ -1,0 +1,4118 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql - SPARQL query execution.
+
+=cut
+
+from rdf/store import RDFStore;
+from rdf/term import
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFIRI,
+	RDFLiteral,
+	RDF_NS,
+	SPARQLError,
+	XSD_NS,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_term_equals,
+	rdf_term_key;
+from rdf/parser/common import RDFReader;
+from rdf/sparql/parser import sparql_parse_ast;
+from std/data/json import JSON;
+from std/digest/md5 import md5_hex;
+from std/digest/sha import sha1_hex, sha256_hex, sha384_hex, sha512_hex;
+from std/internals import to_Regexp_with_flags;
+from std/math import Math;
+from std/net/http import UserAgent;
+from std/net/url import escape as _url_escape;
+from std/string import contains, ends_with, index, join, replace, rindex, split, sprint, starts_with, substr, trim;
+from std/time import Time, TimeZone;
+from std/uuid import create_uuid;
+
+function _sparql_eval_patterns_from;
+function _sparql_filter_ok;
+function _sparql_matching_paren;
+function _sparql_outer_parens;
+function _sparql_parse;
+function _sparql_eval_group_text;
+function _sparql_apply_values;
+function _sparql_path_endpoints;
+function _sparql_path_reverse_endpoints;
+function _sparql_parse_aggregate;
+function _binding_key;
+function _sparql_is_term;
+function _sparql_is_numeric_literal;
+function _sparql_literal_datatype;
+function _sparql_is_string_literal;
+function _sparql_eval_expr;
+function _sparql_merge_binding;
+function _sparql_prefix_text;
+function _sparql_decimal_lexical;
+function _sparql_double_lexical;
+function sparql_query;
+
+let _sparql_bnode_counter := 0;
+
+function _sparql_is_iri_start ( String text, Number pos ) {
+	return false unless substr( text, pos, 1 ) eq "<";
+	let i := pos + 1;
+	return false if i >= length text;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		return true if ch eq ">";
+		return false if ch eq "=" or ch eq "\"" or ch ~ /\s/;
+		i++;
+	}
+	return false;
+}
+
+function _sparql_strip_comments ( String text ) {
+	let out := "";
+	let quoted := false;
+	let iri := false;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			out _= ch;
+			if ( ch eq "\"" and substr( text, i - 1, 1 ) ne "\\" ) {
+				quoted := false;
+			}
+			i++;
+			next;
+		}
+		if ( iri ) {
+			out _= ch;
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			out _= ch;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			out _= ch;
+			i++;
+			next;
+		}
+		if ( ch eq "#" ) {
+			while ( i < length text and substr( text, i, 1 ) ne "\n" ) {
+				i++;
+			}
+			next;
+		}
+		out _= ch;
+		i++;
+	}
+	return out;
+}
+
+function _sparql_validate_balanced ( String text ) {
+	let quoted := false;
+	let iri := false;
+	let braces := 0;
+	let parens := 0;
+	let brackets := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			if ( ch eq "\"" and substr( text, i - 1, 1 ) ne "\\" ) {
+				quoted := false;
+			}
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+		}
+		else if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+		}
+		else if ( ch eq "{" ) {
+			braces++;
+		}
+		else if ( ch eq "}" ) {
+			braces--;
+		}
+		else if ( ch eq "(" ) {
+			parens++;
+		}
+		else if ( ch eq ")" ) {
+			parens--;
+		}
+		else if ( ch eq "[" ) {
+			brackets++;
+		}
+		else if ( ch eq "]" ) {
+			brackets--;
+		}
+		throw new SPARQLError(message: "SPARQL syntax: unbalanced delimiters")
+			if braces < 0 or parens < 0 or brackets < 0;
+		i++;
+	}
+	throw new SPARQLError(message: "SPARQL syntax: unterminated string")
+		if quoted;
+	throw new SPARQLError(message: "SPARQL syntax: unterminated IRI")
+		if iri;
+	throw new SPARQLError(message: "SPARQL syntax: unbalanced delimiters")
+		if braces != 0 or parens != 0 or brackets != 0;
+}
+
+function _sparql_matching_brace ( String text, Number open ) {
+	let quoted := false;
+	let iri := false;
+	let depth := 0;
+	let i := open;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			if ( ch eq "\"" and substr( text, i - 1, 1 ) ne "\\" ) {
+				quoted := false;
+			}
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+		}
+		else if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+		}
+		else if ( ch eq "{" ) {
+			depth++;
+		}
+		else if ( ch eq "}" ) {
+			depth--;
+			return i if depth == 0;
+		}
+		i++;
+	}
+	return -1;
+}
+
+function _sparql_validate_syntax ( String query ) {
+	return sparql_parse_ast(query){type};
+}
+
+function sparql_parse ( String query ) {
+	return sparql_parse_ast(query);
+}
+
+function sparql_parse_query ( String query ) {
+	return sparql_parse(query);
+}
+
+function _sparql_prefixes ( String text ) {
+	let prefixes := {};
+	let lines := split( _sparql_strip_comments(text), "\n" );
+	let body := [];
+	for ( let line in lines ) {
+		let clean := trim(line);
+		if ( clean ~ /^BASE\s+<([^>]+)>/i ) {
+			let m := clean ~ /^BASE\s+<([^>]+)>/i;
+			prefixes.set( "__base", m[1] );
+		}
+		else if ( clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>/i ) {
+			let m := clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>/i;
+			prefixes.set( m[1], m[2] );
+		}
+		else if ( clean ne "" ) {
+			body.push(line);
+		}
+	}
+	return { prefixes: prefixes, body: join( "\n", body ) };
+}
+
+function _sparql_resolve_iri ( String iri, Dict prefixes ) {
+	return iri if iri ~ /^[A-Za-z][A-Za-z0-9+.-]*:/;
+	return prefixes.get( "__base", "" ) _ iri;
+}
+
+function _sparql_expand ( String token, Dict prefixes ) {
+	if ( starts_with( token, "?" ) ) {
+		return { variable: substr( token, 1 ) };
+	}
+	if ( token eq "[]" ) {
+		return { wildcard: true };
+	}
+	if ( starts_with( token, "<" ) and substr( token, length token - 1, 1 ) eq ">" ) {
+		return rdf_iri(_sparql_resolve_iri(
+			substr( token, 1, length token - 2 ),
+			prefixes,
+		));
+	}
+	if ( starts_with( token, "\"" ) ) {
+		return ( new RDFReader(source: token) ).read_literal();
+	}
+	if ( lc(token) eq "true" or lc(token) eq "false" ) {
+		return rdf_literal( lc(token), "", rdf_iri(XSD_NS _ "boolean") );
+	}
+	if ( token ~ /^[+-]?[0-9]+$/ ) {
+		return rdf_literal( token, "", rdf_iri(XSD_NS _ "integer") );
+	}
+	if ( token ~ /^[+-]?[0-9]*\.[0-9]+$/ ) {
+		return rdf_literal( token, "", rdf_iri(XSD_NS _ "decimal") );
+	}
+	if ( token eq "a" ) {
+		return rdf_iri(RDF_NS _ "type");
+	}
+	if ( starts_with( token, "_:" ) ) {
+		return rdf_blank(substr( token, 2 ));
+	}
+	let parts := split( token, ":", 2 );
+	if ( parts.length() == 2 and prefixes.exists(parts[0]) ) {
+		return rdf_iri(prefixes.get(parts[0]) _ parts[1]);
+	}
+	throw new SPARQLError(message: "SPARQL token not understood: " _ token);
+}
+
+function _sparql_split_top ( String text, String sep ) {
+	let parts := [];
+	let token := "";
+	let iri := false;
+	let depth := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( iri ) {
+			token _= ch;
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			token _= ch;
+			i++;
+			next;
+		}
+		if ( ch eq "(" ) {
+			depth++;
+		}
+		else if ( ch eq ")" ) {
+			depth--;
+		}
+		if ( depth == 0 and ch eq sep ) {
+			parts.push(token);
+			token := "";
+			i++;
+			next;
+		}
+		token _= ch;
+		i++;
+	}
+	parts.push(token);
+	return parts;
+}
+
+function _sparql_path_outer_parens ( String text ) {
+	let clean := trim(text);
+	while ( true ) {
+		let next_clean := trim(_sparql_outer_parens(clean));
+		return clean if next_clean eq clean;
+		clean := next_clean;
+	}
+}
+
+function _sparql_path_postfix ( String text ) {
+	let clean := trim(text);
+	let final_char := substr( clean, length clean - 1, 1 );
+	if ( final_char eq "*" or final_char eq "+" or final_char eq "?" ) {
+		return {
+			op: final_char,
+			body: substr( clean, 0, length clean - 1 ),
+		};
+	}
+	if ( clean ~ /^([\s\S]+)\{([0-9]+)(,([0-9]*))?\}$/ ) {
+		let m := clean ~ /^([\s\S]+)\{([0-9]+)(,([0-9]*))?\}$/;
+		return {
+			op: "{}",
+			body: m[1],
+			min: int(m[2]),
+			max: m[4] eq "" ? null : int(m[4]),
+		};
+	}
+	return null;
+}
+
+function _sparql_parse_path_set_item ( String raw, Dict prefixes ) {
+	let clean := trim(raw);
+	if ( starts_with( clean, "^" ) ) {
+		return {
+			inverse: true,
+			term: _sparql_expand(substr( clean, 1 ), prefixes),
+		};
+	}
+	return {
+		inverse: false,
+		term: _sparql_expand(clean, prefixes),
+	};
+}
+
+function _sparql_parse_path ( String raw, Dict prefixes ) {
+	let clean := trim(_sparql_path_outer_parens(raw));
+	let alternatives := _sparql_split_top( clean, "|" );
+	if ( alternatives.length() > 1 ) {
+		let items := [];
+		for ( let item in alternatives ) {
+			items.push(_sparql_parse_path( item, prefixes ));
+		}
+		return { path: "alt", items: items };
+	}
+	let sequence := _sparql_split_top( clean, "/" );
+	if ( sequence.length() > 1 ) {
+		let items := [];
+		for ( let item in sequence ) {
+			items.push(_sparql_parse_path( item, prefixes ));
+		}
+		return { path: "seq", items: items };
+	}
+	let post := _sparql_path_postfix(clean);
+	if ( post != null ) {
+		return {
+			path: post{op},
+			item: _sparql_parse_path( post{body}, prefixes ),
+			min: post.get( "min", null ),
+			max: post.get( "max", null ),
+		};
+	}
+	if ( starts_with( clean, "^" ) ) {
+		return {
+			path: "inv",
+			item: _sparql_parse_path( substr( clean, 1 ), prefixes ),
+		};
+	}
+	if ( starts_with( clean, "!" ) ) {
+		let body := trim(substr( clean, 1 ));
+		body := _sparql_path_outer_parens(body);
+		let items := [];
+		for ( let item in _sparql_split_top( body, "|" ) ) {
+			items.push(_sparql_parse_path_set_item( item, prefixes ));
+		}
+		return { path: "neg", items: items };
+	}
+	return _sparql_expand(clean, prefixes);
+}
+
+function _sparql_parse_predicate ( String token, Dict prefixes ) {
+	return _sparql_expand(token, prefixes) if starts_with( token, "?" );
+	return _sparql_parse_path( token, prefixes )
+		if contains( token, "/" ) or contains( token, "|" ) or
+		contains( token, "^" ) or contains( token, "!" ) or
+		contains( token, "*" ) or contains( token, "+" ) or
+		contains( token, "?" ) or contains( token, "{" );
+	return _sparql_expand(token, prefixes);
+}
+
+function _sparql_graph_term ( graph ) {
+	return graph == null ? rdf_default_graph() : graph;
+}
+
+function _sparql_parse_term_at (
+	Array raw,
+	Number i,
+	Dict prefixes,
+	graph,
+	Number anon_index,
+	Array patterns
+) {
+	let token := raw[i];
+	let g := _sparql_graph_term(graph);
+	let pos := i;
+	let next_anon := anon_index;
+	if ( token eq "(" ) {
+		if ( i + 1 < raw.length() and raw[i + 1] eq ")" ) {
+			return {
+				spec: rdf_iri(RDF_NS _ "nil"),
+				next: i + 2,
+				anon_index: anon_index,
+			};
+		}
+		let head := { variable: "__anon" _ next_anon };
+		next_anon++;
+		let current := head;
+		pos++;
+		while ( pos < raw.length() and raw[pos] ne ")" ) {
+			let item := _sparql_parse_term_at(
+				raw,
+				pos,
+				prefixes,
+				graph,
+				next_anon,
+				patterns,
+			);
+			next_anon := item{anon_index};
+			pos := item{next};
+			let rest := pos < raw.length() and raw[pos] eq ")"
+				? rdf_iri(RDF_NS _ "nil")
+				: { variable: "__anon" _ next_anon };
+			next_anon++ unless rest instanceof RDFIRI;
+			patterns.push([
+				current,
+				rdf_iri(RDF_NS _ "first"),
+				item{spec},
+				g,
+			]);
+			patterns.push([
+				current,
+				rdf_iri(RDF_NS _ "rest"),
+				rest,
+				g,
+			]);
+			current := rest;
+		}
+		throw new SPARQLError(message: "SPARQL RDF collection expected")
+			if pos >= raw.length();
+		return { spec: head, next: pos + 1, anon_index: next_anon };
+	}
+	if ( token eq "[" ) {
+		let anon := { variable: "__anon" _ next_anon };
+		next_anon++;
+		pos++;
+		if ( pos < raw.length() and raw[pos] eq "]" ) {
+			return { spec: anon, next: pos + 1, anon_index: next_anon };
+		}
+		while ( pos < raw.length() and raw[pos] ne "]" ) {
+			let predicate := raw[pos];
+			pos++;
+			throw new SPARQLError(message: "SPARQL blank node object expected")
+				if pos >= raw.length();
+			while ( pos < raw.length() and raw[pos] ne ";" and raw[pos] ne "]" ) {
+				let item := _sparql_parse_term_at(
+					raw,
+					pos,
+					prefixes,
+					graph,
+					next_anon,
+					patterns,
+				);
+				next_anon := item{anon_index};
+				pos := item{next};
+				patterns.push([
+					anon,
+					_sparql_parse_predicate(predicate, prefixes),
+					item{spec},
+					g,
+				]);
+				if ( pos < raw.length() and raw[pos] eq "," ) {
+					pos++;
+					next;
+				}
+				last;
+			}
+			pos++ if pos < raw.length() and raw[pos] eq ";";
+		}
+		throw new SPARQLError(message: "SPARQL blank node list expected")
+			if pos >= raw.length();
+		return { spec: anon, next: pos + 1, anon_index: next_anon };
+	}
+	return {
+		spec: _sparql_expand(token, prefixes),
+		next: i + 1,
+		anon_index: anon_index,
+	};
+}
+
+function _sparql_tokenize_patterns ( String where ) {
+	let out := [];
+	let token := "";
+	let quoted := false;
+	let iri := false;
+	let i := 0;
+	while ( i < length where ) {
+		let ch := substr( where, i, 1 );
+		if ( quoted ) {
+			token _= ch;
+			if ( ch eq "\"" and substr( where, i - 1, 1 ) ne "\\" ) {
+				quoted := false;
+			}
+			i++;
+			next;
+		}
+		if ( iri ) {
+			token _= ch;
+			if ( ch eq ">" ) {
+				iri := false;
+			}
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			token _= ch;
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( where, i ) ) {
+			token _= ch;
+			iri := true;
+			i++;
+			next;
+		}
+		if ( ch ~ /\s/ ) {
+			if ( token ne "" ) {
+				out.push(token);
+				token := "";
+			}
+			i++;
+			next;
+		}
+		if ( ch eq "(" and token eq "" and
+			substr( where, i + 1, 1 ) ~ /[\?\"_\[0-9\)]/
+		) {
+			out.push(ch);
+			i++;
+			next;
+		}
+		if ( ch eq ")" and token ne "" and not contains( token, "(" ) ) {
+			out.push(token);
+			token := "";
+			out.push(ch);
+			i++;
+			next;
+		}
+		if ( ch eq ")" and token eq "" ) {
+			out.push(ch);
+			i++;
+			next;
+		}
+		if ( ch eq "." or ch eq ";" or ch eq "," or ch eq "[" or ch eq "]" ) {
+			if ( token ne "" ) {
+				out.push(token);
+				token := "";
+			}
+			out.push(ch);
+			i++;
+			next;
+		}
+		token _= ch;
+		i++;
+	}
+	out.push(token) if token ne "";
+	return out;
+}
+
+function _sparql_parse_patterns ( String text, Dict prefixes, graph := null ) {
+	let patterns := [];
+	let raw := _sparql_tokenize_patterns(text);
+	let i := 0;
+	let anon_index := 0;
+	let subject := null;
+	let predicate := null;
+	while ( i < raw.length() ) {
+		if ( raw[i] eq "." ) {
+			subject := null;
+			predicate := null;
+			i++;
+			next;
+		}
+		if ( raw[i] eq ";" ) {
+			predicate := null;
+			i++;
+			next;
+		}
+		if ( raw[i] eq "," ) {
+			i++;
+			next;
+		}
+		if ( subject == null ) {
+			let subject_item := _sparql_parse_term_at(
+				raw,
+				i,
+				prefixes,
+				graph,
+				anon_index,
+				patterns,
+			);
+			subject := subject_item{spec};
+			anon_index := subject_item{anon_index};
+			i := subject_item{next};
+			throw new SPARQLError(message: "SPARQL predicate expected")
+				if i >= raw.length();
+			predicate := raw[i];
+			i++;
+		}
+		else if ( predicate == null ) {
+			throw new SPARQLError(message: "SPARQL predicate expected")
+				if i >= raw.length();
+			predicate := raw[i];
+			i++;
+		}
+		throw new SPARQLError(message: "SPARQL object expected")
+			if i >= raw.length();
+		let object_item := _sparql_parse_term_at(
+			raw,
+			i,
+			prefixes,
+			graph,
+			anon_index,
+			patterns,
+		);
+		let object_spec := object_item{spec};
+		anon_index := object_item{anon_index};
+		i := object_item{next};
+		patterns.push([
+			subject,
+			_sparql_parse_predicate(predicate, prefixes),
+			object_spec,
+			_sparql_graph_term(graph),
+		]);
+		if ( i < raw.length() and raw[i] eq "." ) {
+			subject := null;
+			predicate := null;
+		}
+	}
+	return patterns;
+}
+
+function _sparql_value_tokens ( String text ) {
+	let out := [];
+	let token := "";
+	let quoted := false;
+	let iri := false;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			token _= ch;
+			if ( ch eq "\"" and substr( text, i - 1, 1 ) ne "\\" ) {
+				quoted := false;
+			}
+			i++;
+			next;
+		}
+		if ( iri ) {
+			token _= ch;
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			token _= ch;
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			token _= ch;
+			iri := true;
+			i++;
+			next;
+		}
+		if ( ch ~ /\s/ ) {
+			if ( token ne "" ) {
+				out.push(token);
+				token := "";
+			}
+			i++;
+			next;
+		}
+		if ( ch eq "(" or ch eq ")" ) {
+			if ( token ne "" ) {
+				out.push(token);
+				token := "";
+			}
+			out.push(ch);
+			i++;
+			next;
+		}
+		token _= ch;
+		i++;
+	}
+	out.push(token) if token ne "";
+	return out;
+}
+
+function _sparql_parse_values_terms ( String text, Dict prefixes ) {
+	let terms := [];
+	for ( let token in _sparql_value_tokens(text) ) {
+		next if token eq "(" or token eq ")";
+		terms.push(token eq "UNDEF" ? null : _sparql_expand(token, prefixes));
+	}
+	return terms;
+}
+
+function _sparql_parse_values_blocks ( String text, Dict prefixes ) {
+	let blocks := [];
+	let rest := text;
+	while ( rest ~ /VALUES\s+(\?[A-Za-z][A-Za-z0-9_]*)\s*\{([^{}]*)\}/i ) {
+		let m := rest ~ /VALUES\s+(\?[A-Za-z][A-Za-z0-9_]*)\s*\{([^{}]*)\}/i;
+		let var_name := substr( m[1], 1 );
+		let rows := [];
+		for ( let term in _sparql_parse_values_terms( m[2], prefixes ) ) {
+			let row := {};
+			row.set( var_name, term ) if term != null;
+			rows.push(row);
+		}
+		blocks.push({ vars: [ var_name ], rows: rows });
+		rest := replace( rest, /VALUES\s+\?[A-Za-z][A-Za-z0-9_]*\s*\{[^{}]*\}/i, "", "" );
+	}
+	rest := text;
+	while ( rest ~ /VALUES\s*\(([^)]*)\)\s*\{([^{}]*)\}/i ) {
+		let m := rest ~ /VALUES\s*\(([^)]*)\)\s*\{([^{}]*)\}/i;
+		let vars := [];
+		for ( let var_token in _sparql_value_tokens(m[1]) ) {
+			vars.push(substr( var_token, 1 )) if starts_with( var_token, "?" );
+		}
+		let rows := [];
+		let tokens := _sparql_value_tokens(m[2]);
+		let i := 0;
+		while ( i < tokens.length() ) {
+			if ( tokens[i] ne "(" ) {
+				i++;
+				next;
+			}
+			i++;
+			let row := {};
+			let col := 0;
+			while ( i < tokens.length() and tokens[i] ne ")" ) {
+				if ( col < vars.length() and tokens[i] ne "UNDEF" ) {
+					row.set( vars[col], _sparql_expand(tokens[i], prefixes) );
+				}
+				col++;
+				i++;
+			}
+			rows.push(row);
+			i++;
+		}
+		blocks.push({ vars: vars, rows: rows });
+		rest := replace( rest, /VALUES\s*\([^)]*\)\s*\{[^{}]*\}/i, "", "" );
+	}
+	return blocks;
+}
+
+function _sparql_remove_values ( String text ) {
+	let out := text;
+	while ( out ~ /VALUES\s+(\?[A-Za-z][A-Za-z0-9_]*)\s*\{([^{}]*)\}/i ) {
+		out := replace( out, /VALUES\s+\?[A-Za-z][A-Za-z0-9_]*\s*\{[^{}]*\}/i, "", "" );
+	}
+	while ( out ~ /VALUES\s*\(([^)]*)\)\s*\{([^{}]*)\}/i ) {
+		out := replace( out, /VALUES\s*\([^)]*\)\s*\{[^{}]*\}/i, "", "" );
+	}
+	return out;
+}
+
+function _sparql_limit_value ( String tail, String keyword ) {
+	let re := keyword eq "LIMIT"
+		? /LIMIT\s+([0-9]+)/i
+		: /OFFSET\s+([0-9]+)/i;
+	if ( tail ~ re ) {
+		let m := tail ~ re;
+		return int(m[1]);
+	}
+	return null;
+}
+
+function _sparql_is_boundary ( String ch ) {
+	return ch eq "" or ch ~ /[\s{}().;,]/;
+}
+
+function _sparql_starts_keyword ( String text, String keyword ) {
+	let clean := trim(text);
+	return false unless starts_with( uc(clean), keyword );
+	let after := substr( clean, length keyword, 1 );
+	return _sparql_is_boundary(after);
+}
+
+function _sparql_outer_parens ( String text ) {
+	let clean := trim(text);
+	return clean if not( starts_with( clean, "(" ) and
+		substr( clean, length clean - 1, 1 ) eq ")" );
+	let close := _sparql_matching_paren( clean, 0 );
+	return close == length clean - 1
+		? substr( clean, 1, length clean - 2 )
+		: clean;
+}
+
+function _sparql_matching_paren ( String text, Number open ) {
+	let quoted := false;
+	let iri := false;
+	let depth := 0;
+	let i := open;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+		}
+		else if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+		}
+		else if ( ch eq "(" ) {
+			depth++;
+		}
+		else if ( ch eq ")" ) {
+			depth--;
+			return i if depth == 0;
+		}
+		i++;
+	}
+	return -1;
+}
+
+function _sparql_find_top_operator ( String text ) {
+	let quoted := false;
+	let iri := false;
+	let parens := 0;
+	let brackets := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			i++;
+			next;
+		}
+		parens++ if ch eq "(";
+		parens-- if ch eq ")";
+		brackets++ if ch eq "[";
+		brackets-- if ch eq "]";
+		if ( parens == 0 and brackets == 0 ) {
+			return i if ch eq "{";
+			let rest := substr( text, i );
+			return i if _sparql_starts_keyword( rest, "OPTIONAL" ) or
+					_sparql_starts_keyword( rest, "MINUS" ) or
+					_sparql_starts_keyword( rest, "FILTER" ) or
+					_sparql_starts_keyword( rest, "BIND" ) or
+					rest ~ /^BIND\s*\(/i or
+					_sparql_starts_keyword( rest, "VALUES" ) or
+					_sparql_starts_keyword( rest, "SERVICE" ) or
+					_sparql_starts_keyword( rest, "GRAPH" );
+		}
+		i++;
+	}
+	return -1;
+}
+
+function _sparql_extract_braced ( String text ) {
+	let clean := trim(text);
+	let open := index( clean, "{" );
+	throw new SPARQLError(message: "SPARQL group expected") if open < 0;
+	let close := _sparql_matching_brace( clean, open );
+	throw new SPARQLError(message: "SPARQL group expected") if close < open;
+	return {
+		before: trim(substr( clean, 0, open )),
+		body: substr( clean, open + 1, close - open - 1 ),
+		tail: trim(substr( clean, close + 1 )),
+	};
+}
+
+function _sparql_copy_binding ( binding ) {
+	let out := {};
+	for ( let item_key in binding.keys() ) {
+		out.set( item_key, binding.get(item_key) );
+	}
+	return out;
+}
+
+function _sparql_compatible ( left, right ) {
+	let shared := false;
+	for ( let item_key in left.keys() ) {
+		next unless right.exists(item_key);
+		shared := true;
+		return false unless rdf_term_equals( left.get(item_key), right.get(item_key) );
+	}
+	return shared;
+}
+
+function _sparql_numeric_value ( value ) {
+	return 0 + value.get_value() if value instanceof RDFLiteral;
+	return 0 + value;
+}
+
+function _sparql_safe_numeric_value ( value ) {
+	try {
+		return _sparql_numeric_value(value);
+	}
+	catch {
+		return null;
+	}
+}
+
+function _sparql_scalar_string ( value ) {
+	return "" if value == null;
+	return value.get_value()
+		if value instanceof RDFIRI or value instanceof RDFBlank or
+		value instanceof RDFLiteral;
+	return "" _ value;
+}
+
+function _sparql_boolean_literal ( Boolean value ) {
+	return rdf_literal(
+		value ? "true" : "false",
+		"",
+		rdf_iri(XSD_NS _ "boolean"),
+	);
+}
+
+function _sparql_integer_literal ( value ) {
+	return rdf_literal( "" _ value, "", rdf_iri(XSD_NS _ "integer") );
+}
+
+function _sparql_decimal_expr_literal ( value ) {
+	return rdf_literal( "" _ value, "", rdf_iri(XSD_NS _ "decimal") );
+}
+
+function _sparql_numeric_result_literal_like ( source, value ) {
+	let datatype := _sparql_literal_datatype(source);
+	if ( datatype eq XSD_NS _ "integer" or datatype eq XSD_NS _ "int" or
+		datatype eq XSD_NS _ "long" or datatype eq XSD_NS _ "short" or
+		datatype eq XSD_NS _ "byte"
+	) {
+		return rdf_literal( "" _ int(value), "", rdf_iri(datatype) );
+	}
+	return rdf_literal( "" _ int(value), "", rdf_iri(datatype) )
+		if datatype eq XSD_NS _ "decimal";
+	return rdf_literal( "" _ value, "", rdf_iri(datatype) )
+		if datatype eq XSD_NS _ "double" or datatype eq XSD_NS _ "float";
+	return _sparql_integer_literal(value);
+}
+
+function _sparql_effective_boolean ( value ) {
+	return false if value == null;
+	return value if value instanceof Boolean;
+	if ( value instanceof RDFLiteral ) {
+		let text := value.get_value();
+		let datatype := value.get_datatype().get_value();
+		return text eq "true" or text eq "1"
+			if datatype eq XSD_NS _ "boolean";
+		return text ne "";
+	}
+	return true;
+}
+
+function _sparql_expr_args ( String text ) {
+	let args := [];
+	let token := "";
+	let quoted := false;
+	let iri := false;
+	let depth := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			token _= ch;
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			token _= ch;
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			token _= ch;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			token _= ch;
+			i++;
+			next;
+		}
+		depth++ if ch eq "(";
+		depth-- if ch eq ")";
+		if ( depth == 0 and ch eq "," ) {
+			args.push(trim(token)) if trim(token) ne "";
+			token := "";
+			i++;
+			next;
+		}
+		token _= ch;
+		i++;
+	}
+	args.push(trim(token)) if trim(token) ne "";
+	return args;
+}
+
+function _sparql_operator_allowed ( String text, Number pos, String op ) {
+	return true unless op eq "+" or op eq "-";
+	let i := pos - 1;
+	while ( i >= 0 and substr( text, i, 1 ) ~ /\s/ ) {
+		i--;
+	}
+	return false if i < 0;
+	let before := substr( text, i, 1 );
+	return false if before eq "(" or before eq "," or before eq "+" or
+		before eq "-" or before eq "*" or before eq "/" or before eq "=" or
+		before eq "<" or before eq ">";
+	return true;
+}
+
+function _sparql_find_top_expr_operator ( String text, Array ops ) {
+	let quoted := false;
+	let iri := false;
+	let depth := 0;
+	let found := null;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			i++;
+			next;
+		}
+		depth++ if ch eq "(";
+		depth-- if ch eq ")";
+		if ( depth == 0 ) {
+			let matched := false;
+			for ( let op in ops ) {
+				if ( substr( text, i, length op ) eq op and
+					_sparql_operator_allowed( text, i, op )
+				) {
+					found := { op: op, pos: i };
+					matched := true;
+					last;
+				}
+			}
+			if ( matched ) {
+				i += length found{op};
+				next;
+			}
+		}
+		i++;
+	}
+	return found;
+}
+
+function _sparql_same_value ( left, right ) {
+	return false if left == null or right == null;
+	return rdf_term_equals( left, right )
+		if _sparql_is_term(left) and _sparql_is_term(right);
+	return _sparql_scalar_string(left) eq _sparql_scalar_string(right);
+}
+
+function _sparql_order_compare ( left, right ) {
+	if ( _sparql_is_numeric_literal(left) and _sparql_is_numeric_literal(right) ) {
+		let l := _sparql_safe_numeric_value(left);
+		let r := _sparql_safe_numeric_value(right);
+		return 0 if l == null or r == null;
+		return -1 if l < r;
+		return 1 if l > r;
+		return 0;
+	}
+	return _sparql_scalar_string(left) cmp _sparql_scalar_string(right);
+}
+
+function _sparql_numeric_expr_literal ( left, right, String op ) {
+	return null unless _sparql_is_numeric_literal(left) and
+		_sparql_is_numeric_literal(right);
+	let l := _sparql_safe_numeric_value(left);
+	let r := _sparql_safe_numeric_value(right);
+	return null if l == null or r == null;
+	if ( op eq "+" ) {
+		return _sparql_integer_literal(l + r);
+	}
+	if ( op eq "-" ) {
+		return _sparql_integer_literal(l - r);
+	}
+	if ( op eq "*" ) {
+		return _sparql_integer_literal(l * r);
+	}
+	return null if r == 0;
+	return _sparql_decimal_expr_literal(l / r);
+}
+
+function _sparql_function_name ( String raw, Dict prefixes ) {
+	if ( contains( raw, ":" ) ) {
+		let term := _sparql_expand(raw, prefixes);
+		return term.get_value() if term instanceof RDFIRI;
+	}
+	return uc(raw);
+}
+
+function _sparql_literal_datatype ( value ) {
+	return "" unless value instanceof RDFLiteral;
+	return value.get_datatype().get_value();
+}
+
+function _sparql_is_numeric_datatype ( String datatype ) {
+	return datatype eq XSD_NS _ "integer" or datatype eq XSD_NS _ "int" or
+		datatype eq XSD_NS _ "long" or datatype eq XSD_NS _ "short" or
+		datatype eq XSD_NS _ "byte" or datatype eq XSD_NS _ "decimal" or
+		datatype eq XSD_NS _ "double" or datatype eq XSD_NS _ "float";
+}
+
+function _sparql_is_numeric_literal ( value ) {
+	return false unless value instanceof RDFLiteral;
+	return _sparql_is_numeric_datatype(value.get_datatype().get_value());
+}
+
+function _sparql_source_datatype ( value ) {
+	return "" unless value instanceof RDFLiteral;
+	return value.get_datatype().get_value();
+}
+
+function _sparql_cast_is_string_source ( value ) {
+	return false unless value instanceof RDFLiteral;
+	let datatype := value.get_datatype().get_value();
+	return datatype eq XSD_NS _ "string" or datatype eq RDF_NS _ "langString";
+}
+
+function _sparql_cast_decimal_lexical ( String lexical, Boolean force_fraction ) {
+	let text := lexical;
+	let sign := "";
+	if ( starts_with( text, "+" ) ) {
+		text := substr( text, 1 );
+	}
+	else if ( starts_with( text, "-" ) ) {
+		sign := "-";
+		text := substr( text, 1 );
+	}
+	let int_part := text;
+	let frac_part := "";
+	if ( contains( text, "." ) ) {
+		let parts := split( text, ".", 2 );
+		int_part := parts[0] eq "" ? "0" : parts[0];
+		frac_part := parts[1];
+	}
+	while ( length int_part > 1 and starts_with( int_part, "0" ) ) {
+		int_part := substr( int_part, 1 );
+	}
+	while ( length frac_part > ( force_fraction ? 1 : 0 ) and
+		ends_with( frac_part, "0" )
+	) {
+		frac_part := substr( frac_part, 0, length(frac_part) - 1 );
+	}
+	let out := sign _ int_part;
+	if ( frac_part ne "" ) {
+		out _= "." _ frac_part;
+	}
+	else if ( force_fraction ) {
+		out _= ".0";
+	}
+	return out;
+}
+
+function _sparql_cast_decimal_number_lexical ( value, Boolean force_fraction ) {
+	return _sparql_cast_decimal_lexical(
+		_sparql_decimal_lexical( value, force_fraction ),
+		force_fraction,
+	);
+}
+
+function _sparql_cast_string_lexical ( value ) {
+	let lexical := _sparql_scalar_string(value);
+	let datatype := _sparql_source_datatype(value);
+	if ( datatype eq XSD_NS _ "boolean" ) {
+		return "false" if lexical eq "0" or lc(lexical) eq "false";
+		return "true" if lexical eq "1" or lc(lexical) eq "true";
+	}
+	if ( datatype eq XSD_NS _ "decimal" ) {
+		return _sparql_cast_decimal_lexical(lexical, false);
+	}
+	if ( datatype eq XSD_NS _ "double" or datatype eq XSD_NS _ "float" ) {
+		return _sparql_cast_decimal_number_lexical(
+			_sparql_safe_numeric_value(value),
+			false,
+		);
+	}
+	return lexical;
+}
+
+function _sparql_cast_float_lexical ( value, String target_datatype ) {
+	let lexical := _sparql_scalar_string(value);
+	let source_datatype := _sparql_source_datatype(value);
+	if ( source_datatype eq XSD_NS _ "boolean" ) {
+		return "1.0E0" if lc(lexical) eq "true" or lexical eq "1";
+		return "0E0";
+	}
+	if ( source_datatype eq XSD_NS _ "integer" ) {
+		return "0" if lexical eq "0";
+		return lexical _ ".0";
+	}
+	if ( source_datatype eq XSD_NS _ "decimal" ) {
+		return _sparql_cast_decimal_lexical(lexical, true);
+	}
+	if ( source_datatype eq XSD_NS _ "double" or
+		source_datatype eq XSD_NS _ "float"
+	) {
+		return _sparql_cast_decimal_number_lexical(
+			_sparql_safe_numeric_value(value),
+			true,
+		);
+	}
+	if ( _sparql_cast_is_string_source(value) ) {
+		if ( contains( uc(lexical), "E" ) ) {
+			let n := _sparql_safe_numeric_value(value);
+			return null if n == null;
+			return "0E0" if n == 0;
+			return replace( lexical, /^\+/, "", "" )
+				if n == 1 and uc(lexical) ~ /^(\+)?1(\.0*)?E0$/;
+			return _sparql_double_lexical( n, true );
+		}
+		if ( contains( lexical, "." ) ) {
+			let n := _sparql_safe_numeric_value(value);
+			return null if n == null;
+			return "0E0" if n == 0;
+			if ( n >= 10 or n <= -10 ) {
+				let sign := n < 0 ? "-" : "";
+				let magnitude := n < 0 ? 0 - n : n;
+				let exp := 0;
+				while ( magnitude >= 10 ) {
+					magnitude /= 10;
+					exp++;
+				}
+				return sign _ _sparql_decimal_lexical(magnitude, false) _
+					"E" _ exp;
+			}
+			return _sparql_cast_decimal_lexical(lexical, false) _ "E0";
+		}
+		return lexical;
+	}
+	return null;
+}
+
+function _sparql_cast ( value, String datatype ) {
+	return null if value == null;
+	let lexical := _sparql_scalar_string(value);
+	let source_datatype := _sparql_source_datatype(value);
+	if ( datatype eq XSD_NS _ "string" ) {
+		return rdf_literal(_sparql_cast_string_lexical(value), "", rdf_iri(datatype));
+	}
+	if ( datatype eq XSD_NS _ "boolean" ) {
+		let normalized := lc(lexical);
+		return rdf_literal( "true", "", rdf_iri(datatype) )
+			if normalized eq "true" or normalized eq "1";
+		return rdf_literal( "false", "", rdf_iri(datatype) )
+			if normalized eq "false" or normalized eq "0";
+		return rdf_literal(
+			_sparql_numeric_value(value) == 0 ? "false" : "true",
+			"",
+			rdf_iri(datatype),
+		) if _sparql_is_numeric_literal(value);
+		return null;
+	}
+	if ( datatype eq XSD_NS _ "integer" or datatype eq XSD_NS _ "int" ) {
+		if ( _sparql_cast_is_string_source(value) ) {
+			return null unless lexical ~ /^[+-]?[0-9]+$/;
+		}
+		else {
+			return null unless _sparql_is_numeric_literal(value) or
+				source_datatype eq XSD_NS _ "boolean";
+		}
+		return rdf_literal(
+			( lc(lexical) eq "true" or lexical eq "1" ) ? "1" : "0",
+			"",
+			rdf_iri(datatype),
+		) if source_datatype eq XSD_NS _ "boolean";
+		return rdf_literal( int(0 + lexical), "", rdf_iri(datatype) );
+	}
+	if ( datatype eq XSD_NS _ "decimal" ) {
+		if ( _sparql_cast_is_string_source(value) ) {
+			return null unless lexical ~ /^[+-]?[0-9]+$/ or
+				lexical ~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/;
+			return rdf_literal(
+				_sparql_cast_decimal_lexical(lexical, true),
+				"",
+				rdf_iri(datatype),
+			);
+		}
+		return rdf_literal( "1.0", "", rdf_iri(datatype) )
+			if source_datatype eq XSD_NS _ "boolean" and lc(lexical) eq "true";
+		return rdf_literal( "0.0", "", rdf_iri(datatype) )
+			if source_datatype eq XSD_NS _ "boolean" and
+			( lc(lexical) eq "false" or lexical eq "0" );
+		return null unless _sparql_is_numeric_literal(value);
+		let force_fraction := source_datatype ne XSD_NS _ "integer" or
+			lexical ne "0";
+		return rdf_literal(
+			_sparql_cast_decimal_number_lexical(
+				_sparql_safe_numeric_value(value),
+				true,
+			),
+			"",
+			rdf_iri(datatype),
+		) if source_datatype eq XSD_NS _ "double" or
+			source_datatype eq XSD_NS _ "float";
+		return rdf_literal(
+			_sparql_cast_decimal_lexical(lexical, force_fraction),
+			"",
+			rdf_iri(datatype),
+		);
+	}
+	if ( datatype eq XSD_NS _ "double" or datatype eq XSD_NS _ "float" ) {
+		return null unless lexical ~ /^[+-]?[0-9]+$/ or
+			lexical ~ /^[+-]?[0-9]*\.[0-9]+$/ or
+			lexical ~ /^[+-]?[0-9]+(\.[0-9]+)?[eE][+-]?[0-9]+$/ or
+			source_datatype eq XSD_NS _ "boolean";
+		let out := _sparql_cast_float_lexical(value, datatype);
+		return null if out == null;
+		return rdf_literal( out, "", rdf_iri(datatype) );
+	}
+	return rdf_literal(lexical, "", rdf_iri(datatype));
+}
+
+function _sparql_lang_matches ( String lang, String range ) {
+	return true if range eq "*";
+	return lc(lang) eq lc(range) or starts_with( lc(lang), lc(range) _ "-" );
+}
+
+function _sparql_regex_flags ( Array args ) {
+	return args.length() > 2
+		? _sparql_scalar_string(args[2])
+		: "";
+}
+
+function _sparql_regex_match ( String text, String pattern, String flags ) {
+	return ( text ~ to_Regexp_with_flags(pattern, flags) ) ? true : false;
+}
+
+function _sparql_regex_replace (
+	String text,
+	String pattern,
+	String replacement,
+	String flags
+) {
+	return replace( text, pattern, replacement, "g" _ flags );
+}
+
+function _sparql_date_time ( value ) {
+	return Time.parse(_sparql_scalar_string(value), timezone: TimeZone.utc());
+}
+
+function _sparql_date_component ( String lexical, String field ) {
+	let m := lexical ~
+		/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]+(\.[0-9]+)?)/;
+	return null unless m;
+	return 0 + m[1] if field eq "YEAR";
+	return 0 + m[2] if field eq "MONTH";
+	return 0 + m[3] if field eq "DAY";
+	return 0 + m[4] if field eq "HOURS";
+	return 0 + m[5] if field eq "MINUTES";
+	return 0 + m[6];
+}
+
+function _sparql_timezone_text ( String lexical ) {
+	return "Z" if ends_with( lexical, "Z" );
+	return substr( lexical, length lexical - 6 )
+		if lexical ~ /[+-][0-9][0-9]:[0-9][0-9]$/;
+	return "";
+}
+
+function _sparql_string_result_like ( source, String value ) {
+	if ( source instanceof RDFLiteral ) {
+		return rdf_literal( value, source.get_lang() ) if source.get_lang() ne "";
+		if ( source.get_datatype().get_value() eq XSD_NS _ "string" ) {
+			return rdf_literal( value, "", rdf_iri(XSD_NS _ "string") );
+		}
+	}
+	return rdf_literal(value);
+}
+
+function _sparql_string_args_compatible ( left, right ) {
+	return false unless _sparql_is_string_literal(left) and
+		_sparql_is_string_literal(right);
+	let left_lang := left.get_lang();
+	let right_lang := right.get_lang();
+	return true if right_lang eq "";
+	return left_lang ne "" and lc(left_lang) eq lc(right_lang);
+}
+
+function _sparql_is_string_literal ( value ) {
+	return false unless value instanceof RDFLiteral;
+	return true if value.get_lang() ne "";
+	let datatype := value.get_datatype().get_value();
+	return datatype eq XSD_NS _ "string" or datatype eq RDF_NS _ "langString";
+}
+
+function _sparql_is_simple_literal ( value ) {
+	return false unless value instanceof RDFLiteral;
+	return false if value.get_lang() ne "";
+	return value.get_datatype().get_value() eq XSD_NS _ "string";
+}
+
+function _sparql_concat_result ( Array values, String text ) {
+	let lang := null;
+	for ( let value in values ) {
+		return null unless _sparql_is_string_literal(value);
+		if ( value.get_lang() eq "" ) {
+			lang := "";
+			next;
+		}
+		lang := value.get_lang() if lang == null;
+		if ( lang ne value.get_lang() ) {
+			lang := "";
+			last;
+		}
+	}
+	return rdf_literal( text, lang ) if lang != null and lang ne "";
+	return rdf_literal( text, "", rdf_iri(XSD_NS _ "string") );
+}
+
+function _sparql_eval_function ( binding, String name, Array args,
+	Dict prefixes ) {
+	let func := _sparql_function_name( name, prefixes );
+	if ( starts_with( func, XSD_NS ) ) {
+		return _sparql_cast(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+			func,
+		);
+	}
+	if ( func eq "BOUND" ) {
+		return false if args.length() != 1 or not starts_with( args[0], "?" );
+		return binding.exists(substr( args[0], 1 ));
+	}
+	if ( func eq "STR" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return rdf_literal(_sparql_scalar_string(value));
+	}
+	if ( func eq "DATATYPE" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return value.get_datatype() if value instanceof RDFLiteral;
+		return null;
+	}
+	if ( func eq "LANG" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return rdf_literal(value.get_lang()) if value instanceof RDFLiteral;
+		return rdf_literal("");
+	}
+	if ( func eq "LANGMATCHES" ) {
+		let lang := _sparql_scalar_string(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+		);
+		let range := _sparql_scalar_string(
+			_sparql_eval_expr( binding, args[1], prefixes ),
+		);
+		return _sparql_boolean_literal(_sparql_lang_matches( lang, range ));
+	}
+	if ( func eq "CONCAT" ) {
+		let out := "";
+		let values := [];
+		for ( let arg in args ) {
+			let value := _sparql_eval_expr( binding, arg, prefixes );
+			return null unless _sparql_is_string_literal(value);
+			values.push(value);
+			out _= _sparql_scalar_string(value);
+		}
+		return _sparql_concat_result( values, out );
+	}
+	if ( func eq "STRDT" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return null unless _sparql_is_simple_literal(value);
+		let datatype := _sparql_eval_expr( binding, args[1], prefixes );
+		return null unless datatype instanceof RDFIRI;
+		return rdf_literal(
+			_sparql_scalar_string(value),
+			"",
+			datatype,
+		);
+	}
+	if ( func eq "STRLANG" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return null unless _sparql_is_simple_literal(value);
+		return rdf_literal(
+			_sparql_scalar_string(value),
+			_sparql_scalar_string(_sparql_eval_expr( binding, args[1], prefixes )),
+		);
+	}
+	if ( func eq "IRI" or func eq "URI" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return value if value instanceof RDFIRI;
+		return rdf_iri(_sparql_resolve_iri(_sparql_scalar_string(value), prefixes));
+	}
+	if ( func eq "BNODE" ) {
+		if ( args.length() == 0 ) {
+			_sparql_bnode_counter++;
+			return rdf_blank("sparql-b" _ _sparql_bnode_counter);
+		}
+		return rdf_blank("sparql-" _ _sparql_scalar_string(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+		));
+	}
+	if ( func eq "UCASE" or func eq "LCASE" ) {
+		let source := _sparql_eval_expr( binding, args[0], prefixes );
+		return null unless _sparql_is_string_literal(source);
+		let value := _sparql_scalar_string(source);
+		return _sparql_string_result_like(
+			source,
+			func eq "UCASE" ? uc(value) : lc(value),
+		);
+	}
+	if ( func eq "STRLEN" ) {
+		let source := _sparql_eval_expr( binding, args[0], prefixes );
+		return null unless _sparql_is_string_literal(source);
+		let value := _sparql_scalar_string(source);
+		return _sparql_integer_literal(length value);
+	}
+	if ( func eq "CONTAINS" or func eq "STRSTARTS" or func eq "STRENDS" ) {
+		let left_value := _sparql_eval_expr( binding, args[0], prefixes );
+		let right_value := _sparql_eval_expr( binding, args[1], prefixes );
+		return null unless _sparql_is_string_literal(left_value) and
+			_sparql_is_string_literal(right_value);
+		let left := _sparql_scalar_string(left_value);
+		let right := _sparql_scalar_string(right_value);
+		return _sparql_boolean_literal(contains( left, right ))
+			if func eq "CONTAINS";
+		return _sparql_boolean_literal(starts_with( left, right ))
+			if func eq "STRSTARTS";
+		return _sparql_boolean_literal(ends_with( left, right ));
+	}
+	if ( func eq "SUBSTR" ) {
+		let source := _sparql_eval_expr( binding, args[0], prefixes );
+		return null unless _sparql_is_string_literal(source);
+		let value := _sparql_scalar_string(source);
+		let start := int(_sparql_numeric_value(_sparql_eval_expr( binding, args[1], prefixes ))) - 1;
+		return _sparql_string_result_like( source, substr( value, start ) )
+			if args.length() < 3;
+		let count := int(_sparql_numeric_value(_sparql_eval_expr( binding, args[2], prefixes )));
+		return _sparql_string_result_like( source, substr( value, start, count ) );
+	}
+	if ( func eq "STRBEFORE" or func eq "STRAFTER" ) {
+		let source := _sparql_eval_expr( binding, args[0], prefixes );
+		let needle_value := _sparql_eval_expr( binding, args[1], prefixes );
+		return null unless _sparql_string_args_compatible(source, needle_value);
+		let value := _sparql_scalar_string(source);
+		let needle := _sparql_scalar_string(needle_value);
+		let pos := index( value, needle );
+		return rdf_literal("") if pos < 0;
+		return _sparql_string_result_like( source, substr( value, 0, pos ) )
+			if func eq "STRBEFORE";
+		return _sparql_string_result_like(
+			source,
+			substr( value, pos + length needle ),
+		);
+	}
+	if ( func eq "ENCODE_FOR_URI" ) {
+		return rdf_literal(_url_escape(_sparql_scalar_string(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+		)));
+	}
+	if ( func eq "REGEX" ) {
+		let values := [];
+		for ( let arg in args ) {
+			values.push(_sparql_eval_expr( binding, arg, prefixes ));
+		}
+		return null unless _sparql_is_string_literal(values[0]) and
+			_sparql_is_string_literal(values[1]);
+		return _sparql_boolean_literal(_sparql_regex_match(
+			_sparql_scalar_string(values[0]),
+			_sparql_scalar_string(values[1]),
+			_sparql_regex_flags(values),
+		));
+	}
+	if ( func eq "REPLACE" ) {
+		let values := [];
+		for ( let arg in args ) {
+			values.push(_sparql_eval_expr( binding, arg, prefixes ));
+		}
+		return null unless _sparql_is_string_literal(values[0]) and
+			_sparql_is_string_literal(values[1]) and
+			_sparql_is_string_literal(values[2]);
+		return _sparql_string_result_like(values[0], _sparql_regex_replace(
+			_sparql_scalar_string(values[0]),
+			_sparql_scalar_string(values[1]),
+			_sparql_scalar_string(values[2]),
+			values.length() > 3 ? _sparql_scalar_string(values[3]) : "",
+		));
+	}
+	if ( func eq "MD5" or func eq "SHA1" or func eq "SHA256" or
+		func eq "SHA384" or func eq "SHA512"
+	) {
+		let bytes := to_binary(_sparql_scalar_string(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+		));
+		return rdf_literal(md5_hex(bytes)) if func eq "MD5";
+		return rdf_literal(sha1_hex(bytes)) if func eq "SHA1";
+		return rdf_literal(sha256_hex(bytes)) if func eq "SHA256";
+		return rdf_literal(sha384_hex(bytes)) if func eq "SHA384";
+		return rdf_literal(sha512_hex(bytes));
+	}
+	if ( func eq "ISIRI" or func eq "ISURI" or func eq "ISBLANK" or
+		func eq "ISLITERAL" or func eq "ISNUMERIC"
+	) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		return _sparql_boolean_literal(value instanceof RDFIRI)
+			if func eq "ISIRI" or func eq "ISURI";
+		return _sparql_boolean_literal(value instanceof RDFBlank)
+			if func eq "ISBLANK";
+		return _sparql_boolean_literal(value instanceof RDFLiteral)
+			if func eq "ISLITERAL";
+		return _sparql_boolean_literal(_sparql_is_numeric_literal(value));
+	}
+	if ( func eq "SAMETERM" ) {
+		return _sparql_boolean_literal(rdf_term_equals(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+			_sparql_eval_expr( binding, args[1], prefixes ),
+		));
+	}
+	if ( func eq "UUID" or func eq "STRUUID" ) {
+		let uuid := create_uuid();
+		return rdf_iri("urn:uuid:" _ uuid) if func eq "UUID";
+		return rdf_literal(uuid);
+	}
+	if ( func eq "RAND" ) {
+		return rdf_literal( "" _ Math.rand(), "", rdf_iri(XSD_NS _ "double") );
+	}
+	if ( func eq "NOW" ) {
+		return rdf_literal(
+			( new Time(timezone: TimeZone.utc()) ).to_rfc3339(),
+			"",
+			rdf_iri(XSD_NS _ "dateTime"),
+		);
+	}
+	if ( func eq "YEAR" or func eq "MONTH" or func eq "DAY" or
+		func eq "HOURS" or func eq "MINUTES" or func eq "SECONDS"
+	) {
+		let lexical := _sparql_scalar_string(
+			_sparql_eval_expr( binding, args[0], prefixes ),
+		);
+		let value := _sparql_date_component( lexical, func );
+		return null if value == null;
+		return _sparql_decimal_expr_literal(value) if func eq "SECONDS";
+		return _sparql_integer_literal(value);
+	}
+	if ( func eq "TZ" or func eq "TIMEZONE" ) {
+		let value := _sparql_eval_expr( binding, args[0], prefixes );
+		let tz := _sparql_timezone_text(_sparql_scalar_string(value));
+		return rdf_literal(tz) if func eq "TZ";
+		return rdf_literal("PT0S", "", rdf_iri(XSD_NS _ "dayTimeDuration"))
+			if tz eq "Z" or tz eq "+00:00" or tz eq "-00:00";
+		return null if tz eq "";
+		let sign := substr( tz, 0, 1 );
+		let hours := int(substr( tz, 1, 2 ));
+		let mins := int(substr( tz, 4, 2 ));
+		return rdf_literal(
+			(sign eq "-" ? "-" : "") _ "PT" _ hours _ "H" _
+				( mins == 0 ? "" : mins _ "M" ),
+			"",
+			rdf_iri(XSD_NS _ "dayTimeDuration"),
+		);
+	}
+	if ( func eq "ABS" or func eq "CEIL" or func eq "FLOOR" or func eq "ROUND" ) {
+		let source := _sparql_eval_expr( binding, args[0], prefixes );
+		let n := _sparql_numeric_value(source);
+		if ( func eq "ABS" ) {
+			return _sparql_numeric_result_literal_like(
+				source,
+				n < 0 ? 0 - n : n,
+			);
+		}
+		let whole := int(n);
+		if ( func eq "CEIL" ) {
+			return _sparql_numeric_result_literal_like(
+				source,
+				n > whole ? whole + 1 : whole,
+			);
+		}
+		if ( func eq "FLOOR" ) {
+			return _sparql_numeric_result_literal_like(
+				source,
+				n < whole ? whole - 1 : whole,
+			);
+		}
+		let rounded_base := n + 0.5;
+		let rounded_whole := int(rounded_base);
+		rounded_whole-- if rounded_base < rounded_whole;
+		return _sparql_numeric_result_literal_like(source, rounded_whole);
+	}
+	if ( func eq "IF" ) {
+		let condition := _sparql_eval_expr( binding, args[0], prefixes );
+		return null if condition == null;
+		return _sparql_eval_expr( binding, args[1], prefixes )
+			if _sparql_effective_boolean(condition);
+		return _sparql_eval_expr( binding, args[2], prefixes );
+	}
+	if ( func eq "COALESCE" ) {
+		for ( let arg in args ) {
+			try {
+				let value := _sparql_eval_expr( binding, arg, prefixes );
+				return value if value != null;
+			}
+			catch {
+			}
+		}
+		return null;
+	}
+	return null;
+}
+
+function _sparql_eval_expr ( binding, String raw, Dict prefixes ) {
+	let clean := trim(_sparql_outer_parens(raw));
+	return null if clean eq "";
+	if ( starts_with( clean, "!" ) ) {
+		return _sparql_boolean_literal(not _sparql_effective_boolean(
+			_sparql_eval_expr( binding, substr( clean, 1 ), prefixes ),
+		));
+	}
+	if ( clean ~ /^([\s\S]+)\s+NOT\s+IN\s*\(([\s\S]*)\)$/i ) {
+		let m := clean ~ /^([\s\S]+)\s+NOT\s+IN\s*\(([\s\S]*)\)$/i;
+		let left := _sparql_eval_expr( binding, m[1], prefixes );
+		for ( let arg in _sparql_expr_args(m[2]) ) {
+			return _sparql_boolean_literal(false)
+				if _sparql_same_value(
+					left,
+					_sparql_eval_expr( binding, arg, prefixes ),
+				);
+		}
+		return _sparql_boolean_literal(true);
+	}
+	if ( clean ~ /^([\s\S]+)\s+IN\s*\(([\s\S]*)\)$/i ) {
+		let m := clean ~ /^([\s\S]+)\s+IN\s*\(([\s\S]*)\)$/i;
+		let left := _sparql_eval_expr( binding, m[1], prefixes );
+		for ( let arg in _sparql_expr_args(m[2]) ) {
+			return _sparql_boolean_literal(true)
+				if _sparql_same_value(
+					left,
+					_sparql_eval_expr( binding, arg, prefixes ),
+				);
+		}
+		return _sparql_boolean_literal(false);
+	}
+	if ( clean ~ /^("[\s\S]*"\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/ ) {
+		let m := clean ~ /^("[\s\S]*"\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/;
+		let datatype := _sparql_expand( m[2], prefixes );
+		if ( datatype instanceof RDFIRI ) {
+			return ( new RDFReader(
+				source: m[1] _ "<" _ datatype.get_value() _ ">",
+			) ).read_literal();
+		}
+	}
+	let compare := _sparql_find_top_expr_operator(
+		clean,
+		[ "!=", "<=", ">=", "=", "<", ">" ],
+	);
+	if ( compare != null ) {
+		let left := _sparql_eval_expr(
+			binding,
+			substr( clean, 0, compare{pos} ),
+			prefixes,
+		);
+		let right := _sparql_eval_expr(
+			binding,
+			substr( clean, compare{pos} + length compare{op} ),
+			prefixes,
+		);
+		if ( compare{op} eq "=" or compare{op} eq "!=" ) {
+			let same := _sparql_same_value( left, right );
+			return _sparql_boolean_literal(compare{op} eq "=" ? same : not same);
+		}
+		let order := _sparql_order_compare(left, right);
+		return _sparql_boolean_literal(order < 0) if compare{op} eq "<";
+		return _sparql_boolean_literal(order > 0) if compare{op} eq ">";
+		return _sparql_boolean_literal(order <= 0) if compare{op} eq "<=";
+		return _sparql_boolean_literal(order >= 0);
+	}
+	let add := _sparql_find_top_expr_operator( clean, [ "+", "-" ] );
+	if ( add != null ) {
+		let left := _sparql_eval_expr( binding, substr( clean, 0, add{pos} ), prefixes );
+		let right := _sparql_eval_expr(
+			binding,
+			substr( clean, add{pos} + length add{op} ),
+			prefixes,
+		);
+		return null if left == null or right == null;
+		return _sparql_numeric_expr_literal( left, right, add{op} );
+	}
+	let mul := _sparql_find_top_expr_operator( clean, [ "*", "/" ] );
+	if ( mul != null ) {
+		let left := _sparql_eval_expr( binding, substr( clean, 0, mul{pos} ), prefixes );
+		let right := _sparql_eval_expr(
+			binding,
+			substr( clean, mul{pos} + length mul{op} ),
+			prefixes,
+		);
+		return null if left == null or right == null;
+		return _sparql_numeric_expr_literal( left, right, mul{op} );
+	}
+	if ( clean ~ /^([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_-]*)?)\s*\(([\s\S]*)\)$/ ) {
+		let m := clean ~ /^([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_-]*)?)\s*\(([\s\S]*)\)$/;
+		return _sparql_eval_function(
+			binding,
+			m[1],
+			_sparql_expr_args(m[2]),
+			prefixes,
+		);
+	}
+	if ( starts_with( clean, "?" ) ) {
+		return binding.get(substr( clean, 1 ), null);
+	}
+	if ( clean ~ /^[+-]?[0-9]+$/ ) {
+		return rdf_literal(clean, "", rdf_iri(XSD_NS _ "integer"));
+	}
+	if ( clean ~ /^[+-]?[0-9]*\.[0-9]+$/ ) {
+		return rdf_literal(clean, "", rdf_iri(XSD_NS _ "decimal"));
+	}
+	if ( clean ~ /^[+-]?[0-9]+[eE][+-]?[0-9]+$/ or
+		clean ~ /^[+-]?[0-9]*\.[0-9]+[eE][+-]?[0-9]+$/ ) {
+		return rdf_literal(clean, "", rdf_iri(XSD_NS _ "double"));
+	}
+	return _sparql_expand( clean, prefixes );
+}
+
+function _sparql_eval_filter ( RDFStore store, String raw, Dict prefixes,
+	binding, graph := null ) {
+	let clean := trim(_sparql_outer_parens(raw));
+	if ( _sparql_starts_keyword( clean, "NOT" ) ) {
+		let rest := trim(substr( clean, 3 ));
+		if ( _sparql_starts_keyword( rest, "EXISTS" ) ) {
+			let group := _sparql_extract_braced(substr( rest, 6 ));
+			return _sparql_eval_group_text(
+				store,
+				group{body},
+				prefixes,
+				[ binding ],
+				graph,
+			).length() == 0;
+		}
+	}
+	if ( _sparql_starts_keyword( clean, "EXISTS" ) ) {
+		let group := _sparql_extract_braced(substr( clean, 6 ));
+		return _sparql_eval_group_text(
+			store,
+			group{body},
+			prefixes,
+			[ binding ],
+			graph,
+		).length() > 0;
+	}
+	let or_op := _sparql_find_top_expr_operator( clean, [ "||" ] );
+	if ( or_op != null ) {
+		return _sparql_eval_filter(
+			store,
+			substr( clean, 0, or_op{pos} ),
+			prefixes,
+			binding,
+			graph,
+		) or _sparql_eval_filter(
+			store,
+			substr( clean, or_op{pos} + 2 ),
+			prefixes,
+			binding,
+			graph,
+		);
+	}
+	let and_op := _sparql_find_top_expr_operator( clean, [ "&&" ] );
+	if ( and_op != null ) {
+		return _sparql_eval_filter(
+			store,
+			substr( clean, 0, and_op{pos} ),
+			prefixes,
+			binding,
+			graph,
+		) and _sparql_eval_filter(
+			store,
+			substr( clean, and_op{pos} + 2 ),
+			prefixes,
+			binding,
+			graph,
+		);
+	}
+	return _sparql_effective_boolean(
+		_sparql_eval_expr( binding, clean, prefixes ),
+	);
+}
+
+function _sparql_apply_bind ( Array bindings, String raw, Dict prefixes ) {
+	let clean := trim(raw);
+	throw new SPARQLError(message: "SPARQL BIND expression expected")
+		unless clean ~ /^BIND\s*\(([\s\S]*)\)$/i;
+	let m := clean ~ /^BIND\s*\(([\s\S]*)\)$/i;
+	let inner := m[1];
+	throw new SPARQLError(message: "SPARQL BIND AS expected")
+		unless inner ~ /^([\s\S]*)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)\s*$/i;
+	let b := inner ~ /^([\s\S]*)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)\s*$/i;
+	let out := [];
+	for ( let binding in bindings ) {
+		let next_binding := _sparql_copy_binding(binding);
+		let value := _sparql_eval_expr( binding, b[1], prefixes );
+		next_binding.set( b[2], value ) if value != null;
+		out.push(next_binding);
+	}
+	return out;
+}
+
+function _sparql_eval_filter_set ( RDFStore store, Array bindings,
+	String raw, Dict prefixes, graph := null ) {
+	let out := [];
+	for ( let binding in bindings ) {
+		out.push(binding)
+			if _sparql_eval_filter( store, raw, prefixes, binding, graph );
+	}
+	return out;
+}
+
+function _sparql_join_bindings ( Array left, Array right ) {
+	let out := [];
+	for ( let binding in left ) {
+		for ( let row in right ) {
+			let merged := _sparql_merge_binding( binding, row );
+			out.push(merged) if merged != null;
+		}
+	}
+	return out;
+}
+
+function _sparql_eval_optional_group ( RDFStore store, Array bindings,
+	String body, Dict prefixes, graph := null ) {
+	let out := [];
+	for ( let binding in bindings ) {
+		let matches := _sparql_eval_group_text(
+			store,
+			body,
+			prefixes,
+			[ binding ],
+			graph,
+		);
+		if ( matches.length() == 0 ) {
+			out.push(binding);
+		}
+		else {
+			for ( let match in matches ) {
+				out.push(match);
+			}
+		}
+	}
+	return out;
+}
+
+function _sparql_eval_minus_group ( RDFStore store, Array bindings,
+	String body, Dict prefixes, graph := null ) {
+	let out := [];
+	let matches := _sparql_eval_group_text(
+		store,
+		body,
+		prefixes,
+		[ {} ],
+		graph,
+	);
+	for ( let binding in bindings ) {
+		let blocked := false;
+		for ( let match in matches ) {
+			if ( _sparql_compatible( binding, match ) ) {
+				blocked := true;
+				last;
+			}
+		}
+		out.push(binding) unless blocked;
+	}
+	return out;
+}
+
+function _sparql_named_graphs ( RDFStore store, Dict prefixes ) {
+	if ( prefixes.exists("__dataset_named") and
+		prefixes.get("__dataset_named").length() > 0
+	) {
+		return prefixes.get("__dataset_named");
+	}
+	let seen := {};
+	let out := [];
+	for ( let quad in store.find() ) {
+		let g := quad.get_graph();
+		next if g instanceof RDFDefaultGraph;
+		let key := rdf_term_key(g);
+		next if seen.exists(key);
+		seen.set( key, true );
+		out.push(g);
+	}
+	return out;
+}
+
+function _sparql_named_graph_allowed ( Dict prefixes, graph ) {
+	return true unless prefixes.exists("__dataset_named");
+	let allowed := prefixes.get("__dataset_named");
+	return true if allowed.length() == 0;
+	for ( let item in allowed ) {
+		return true if rdf_term_equals( item, graph );
+	}
+	return false;
+}
+
+function _sparql_term_sparql ( term ) {
+	return term.to_String()
+		if term instanceof RDFIRI or term instanceof RDFBlank or
+		term instanceof RDFLiteral;
+	return "UNDEF";
+}
+
+function _sparql_values_for_binding ( binding ) {
+	let vars := [];
+	let values := [];
+	for ( let key in binding.keys() ) {
+		next if starts_with( key, "__" );
+		let value := binding.get(key);
+		next unless value instanceof RDFIRI or value instanceof RDFBlank or
+			value instanceof RDFLiteral;
+		vars.push("?" _ key);
+		values.push(_sparql_term_sparql(value));
+	}
+	return "" if vars.length() == 0;
+	return "VALUES (" _ join( " ", vars ) _ ") { (" _
+		join( " ", values ) _ ") }\n";
+}
+
+function _sparql_term_from_json ( item ) {
+	let kind := item.get( "type", "" );
+	if ( kind eq "uri" ) {
+		return rdf_iri(item{value});
+	}
+	if ( kind eq "bnode" ) {
+		return rdf_blank(item{value});
+	}
+	if ( kind eq "literal" or kind eq "typed-literal" ) {
+		let lang := item.get( "xml:lang", item.get( "lang", "" ) );
+		let datatype := item.exists("datatype")
+			? rdf_iri(item{datatype})
+			: null;
+		return rdf_literal( item{value}, lang, datatype );
+	}
+	return null;
+}
+
+function _sparql_json_bindings ( data ) {
+	let out := [];
+	for ( let row in data{results}{bindings} ) {
+		let binding := {};
+		for ( let key in row.keys() ) {
+			let term := _sparql_term_from_json(row.get(key));
+			binding.set( key, term ) if term != null;
+		}
+		out.push(binding);
+	}
+	return out;
+}
+
+function _sparql_service_query ( String endpoint, String query ) {
+	let ua := new UserAgent();
+	let req := ua.build_request( "POST", endpoint )
+		.header( "Accept", "application/sparql-results+json" )
+		.header( "Content-Type", "application/x-www-form-urlencoded" )
+		.body("query=" _ _url_escape(query));
+	return _sparql_json_bindings(req.send(ua).expect_success().json());
+}
+
+function _sparql_eval_service_group ( Array bindings, String endpoint_token,
+	String body, Dict prefixes, Boolean silent ) {
+	let endpoint_spec := _sparql_expand( endpoint_token, prefixes );
+	let out := [];
+	for ( let binding in bindings ) {
+		let endpoint := endpoint_spec instanceof Dict and
+			endpoint_spec.exists("variable")
+			? binding.get( endpoint_spec{variable}, null )
+			: endpoint_spec;
+		if ( not( endpoint instanceof RDFIRI ) ) {
+			out.push(binding) if silent;
+			throw new SPARQLError(message: "SPARQL SERVICE endpoint must be an IRI")
+				unless silent;
+			next;
+		}
+		let query := _sparql_prefix_text(prefixes) _
+			"\nSELECT * WHERE {\n" _
+			_sparql_values_for_binding(binding) _
+			body _
+			"\n}";
+		try {
+			for ( let row in _sparql_service_query( endpoint.get_value(), query ) ) {
+				let merged := _sparql_merge_binding( binding, row );
+				out.push(merged) if merged != null;
+			}
+		}
+		catch ( e ) {
+			if ( silent ) {
+				out.push(binding);
+			}
+			else {
+				throw e;
+			}
+		}
+	}
+	return out;
+}
+
+function _sparql_eval_graph_group ( RDFStore store, Array bindings,
+	String graph_token, String body, Dict prefixes ) {
+	let graph_spec := _sparql_expand( graph_token, prefixes );
+	let out := [];
+	for ( let binding in bindings ) {
+		let graph_terms := [];
+		if ( graph_spec instanceof Dict and graph_spec.exists("variable") ) {
+			if ( binding.exists(graph_spec{variable}) ) {
+				graph_terms.push(binding.get(graph_spec{variable}));
+			}
+			else {
+				graph_terms := _sparql_named_graphs( store, prefixes );
+			}
+		}
+		else {
+			graph_terms.push(graph_spec);
+		}
+		for ( let graph_term in graph_terms ) {
+			next unless _sparql_named_graph_allowed( prefixes, graph_term );
+			let seed := binding;
+			if ( graph_spec instanceof Dict and graph_spec.exists("variable") and
+				not binding.exists(graph_spec{variable})
+			) {
+				seed := _sparql_copy_binding(binding);
+				seed.set( graph_spec{variable}, graph_term );
+			}
+			for ( let match in _sparql_eval_group_text(
+				store,
+				body,
+				prefixes,
+				[ seed ],
+				graph_term,
+			) ) {
+				out.push(match);
+			}
+		}
+	}
+	return out;
+}
+
+function _sparql_prefix_text ( Dict prefixes ) {
+	let lines := [];
+	if ( prefixes.exists("__base") ) {
+		lines.push("BASE <" _ prefixes.get("__base") _ ">");
+	}
+	for ( let name in prefixes.keys() ) {
+		next if starts_with( name, "__" );
+		lines.push("PREFIX " _ name _ ": <" _ prefixes.get(name) _ ">");
+	}
+	return join( "\n", lines );
+}
+
+function _sparql_eval_subquery_group ( RDFStore store, Array bindings,
+	String body, Dict prefixes, graph := null ) {
+	let query := _sparql_prefix_text(prefixes) _ "\n" _ body;
+	let defaults := prefixes.get( "__dataset_default", [] );
+	if ( graph != null ) {
+		defaults := graph instanceof Dict and graph.exists("default_graphs")
+			? graph{default_graphs}
+			: [ graph ];
+	}
+	let result := sparql_query(
+		store,
+		query,
+		{
+			default: defaults,
+			named: prefixes.get( "__dataset_named", [] ),
+		},
+	);
+	let out := [];
+	for ( let binding in bindings ) {
+		for ( let row in result{results} ) {
+			let merged := _sparql_merge_binding( binding, row );
+			out.push(merged) if merged != null;
+		}
+	}
+	return out;
+}
+
+function _sparql_eval_group_or_union ( RDFStore store, Array bindings,
+	String text, Dict prefixes, graph := null ) {
+	let first := _sparql_extract_braced(text);
+	let tail := first{tail};
+	if ( _sparql_starts_keyword( tail, "UNION" ) ) {
+		let branch_rows := _sparql_eval_group_text(
+			store,
+			first{body},
+			prefixes,
+			[ {} ],
+			graph,
+		);
+		let rest := trim(substr( tail, 5 ));
+		while ( starts_with( trim(rest), "{" ) ) {
+			let item := _sparql_extract_braced(rest);
+			for ( let binding in _sparql_eval_group_text(
+				store,
+				item{body},
+				prefixes,
+				[ {} ],
+				graph,
+			) ) {
+				branch_rows.push(binding);
+			}
+			rest := item{tail};
+			if ( _sparql_starts_keyword( rest, "UNION" ) ) {
+				rest := trim(substr( rest, 5 ));
+			}
+			else {
+				last;
+			}
+		}
+		return { bindings: _sparql_join_bindings( bindings, branch_rows ),
+			tail: rest };
+	}
+	return {
+		bindings: _sparql_join_bindings(
+			bindings,
+			_sparql_eval_group_text(
+				store,
+				first{body},
+				prefixes,
+				[ {} ],
+				graph,
+			),
+		),
+		tail: tail,
+	};
+}
+
+function _sparql_eval_bgp_chunk ( RDFStore store, Array bindings,
+	String text, Dict prefixes, graph := null ) {
+	let clean := trim(text);
+	return bindings if clean eq "";
+	if ( clean ~ /^\.?\s*BIND\s*\(/i ) {
+		clean := replace( clean, /^\.?\s*/, "", "" );
+		return _sparql_apply_bind( bindings, clean, prefixes );
+	}
+	let patterns := _sparql_parse_patterns(
+		clean,
+		prefixes,
+		graph == null ? null : graph,
+	);
+	return _sparql_eval_patterns_from( store, patterns, bindings );
+}
+
+function _sparql_eval_group_text ( RDFStore store, String text, Dict prefixes,
+	Array bindings, graph := null ) {
+	let rest := trim(_sparql_strip_comments(text));
+	let current := bindings;
+	let deferred_filters := [];
+	while ( rest ne "" ) {
+		if ( _sparql_starts_keyword( rest, "SELECT" ) ) {
+			current := _sparql_eval_subquery_group(
+				store,
+				current,
+				rest,
+				prefixes,
+				graph,
+			);
+			rest := "";
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "OPTIONAL" ) ) {
+			let item := _sparql_extract_braced(substr( rest, 8 ));
+			current := _sparql_eval_optional_group(
+				store,
+				current,
+				item{body},
+				prefixes,
+				graph,
+			);
+			rest := item{tail};
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "MINUS" ) ) {
+			let item := _sparql_extract_braced(substr( rest, 5 ));
+			current := _sparql_eval_minus_group(
+				store,
+				current,
+				item{body},
+				prefixes,
+				graph,
+			);
+			rest := item{tail};
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "FILTER" ) ) {
+			let after := trim(substr( rest, 6 ));
+			if ( _sparql_starts_keyword( after, "NOT" ) or
+				_sparql_starts_keyword( after, "EXISTS" )
+			) {
+				let item := _sparql_extract_braced(after);
+			deferred_filters.push(substr(
+				after,
+				0,
+				length after - length item{tail},
+			));
+			rest := item{tail};
+			next;
+		}
+			let open := starts_with( after, "(" ) ? 0 : index( after, "(" );
+			let close := open < 0 ? -1 : _sparql_matching_paren(after, open);
+			throw new SPARQLError(message: "SPARQL FILTER expression expected")
+				if close < 0;
+			let expr := open == 0
+				? substr( after, 1, close - 1 )
+				: substr( after, 0, close + 1 );
+			deferred_filters.push(expr);
+			rest := trim(substr( after, close + 1 ));
+			next;
+		}
+			if ( _sparql_starts_keyword( rest, "BIND" ) or rest ~ /^BIND\s*\(/i ) {
+			let open := index( rest, "(" );
+			let close := open < 0 ? -1 : _sparql_matching_paren( rest, open );
+			throw new SPARQLError(message: "SPARQL BIND expression expected")
+				if close < 0;
+			current := _sparql_apply_bind(
+				current,
+				substr( rest, 0, close + 1 ),
+				prefixes,
+			);
+			rest := trim(substr( rest, close + 1 ));
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "VALUES" ) ) {
+			let item := _sparql_extract_braced(rest);
+			let values_text := substr(
+				rest,
+				0,
+				length rest - length item{tail},
+			);
+			current := _sparql_apply_values(
+				current,
+				_sparql_parse_values_blocks(values_text, prefixes),
+			);
+			rest := item{tail};
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "SERVICE" ) ) {
+			let after := trim(substr( rest, 7 ));
+			let silent := false;
+			if ( _sparql_starts_keyword( after, "SILENT" ) ) {
+				silent := true;
+				after := trim(substr( after, 6 ));
+			}
+			let item := _sparql_extract_braced(after);
+			current := _sparql_eval_service_group(
+				current,
+				item{before},
+				item{body},
+				prefixes,
+				silent,
+			);
+			rest := item{tail};
+			next;
+		}
+		if ( _sparql_starts_keyword( rest, "GRAPH" ) ) {
+			let item := _sparql_extract_braced(substr( rest, 5 ));
+			current := _sparql_eval_graph_group(
+				store,
+				current,
+				item{before},
+				item{body},
+				prefixes,
+			);
+			rest := item{tail};
+			next;
+		}
+		if ( starts_with( rest, "{" ) ) {
+			let item := _sparql_extract_braced(rest);
+			if ( starts_with( uc(trim(item{body})), "SELECT" ) ) {
+				current := _sparql_eval_subquery_group(
+					store,
+					current,
+					item{body},
+					prefixes,
+					graph,
+				);
+				rest := item{tail};
+				next;
+			}
+			let grouped := _sparql_eval_group_or_union(
+				store,
+				current,
+				rest,
+				prefixes,
+				graph,
+			);
+			current := grouped{bindings};
+			rest := grouped{tail};
+			next;
+		}
+		let next_op := _sparql_find_top_operator(rest);
+		let chunk := next_op < 0 ? rest : substr( rest, 0, next_op );
+		current := _sparql_eval_bgp_chunk(
+			store,
+			current,
+			chunk,
+			prefixes,
+			graph,
+		);
+		rest := next_op < 0 ? "" : trim(substr( rest, next_op ));
+	}
+	for ( let expr in deferred_filters ) {
+		current := _sparql_eval_filter_set(
+			store,
+			current,
+			expr,
+			prefixes,
+			graph,
+		);
+	}
+	return current;
+}
+
+function _sparql_parse_select_projection ( String head ) {
+	let vars := [];
+	let aliases := [];
+	let where_pos := index( uc(head), "WHERE" );
+	let select_head := where_pos >= 0 ? substr( head, 0, where_pos ) : head;
+	while ( select_head ~ /FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i ) {
+		select_head := replace(
+			select_head,
+			/FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i,
+			"",
+			"",
+		);
+	}
+	let rest := "";
+	let i := 0;
+	while ( i < length select_head ) {
+		let ch := substr( select_head, i, 1 );
+		if ( ch eq "(" ) {
+			let close := _sparql_matching_paren( select_head, i );
+			if ( close > i ) {
+				let inner := trim(substr( select_head, i + 1, close - i - 1 ));
+				if ( inner ~ /^(.+)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)$/i ) {
+					let m := inner ~ /^(.+)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)$/i;
+					let alias := { expr: trim(m[1]), var: m[2] };
+					let aggregate := _sparql_parse_aggregate(alias{expr});
+					if ( aggregate != null ) {
+						alias.set( "aggregate", aggregate{kind} );
+						alias.set( "distinct", aggregate{distinct} );
+						alias.set( "arg", aggregate{arg} );
+						alias.set( "separator", aggregate{separator} );
+					}
+					aliases.push(alias);
+					vars.push(m[2]);
+					i := close + 1;
+					next;
+				}
+			}
+		}
+		rest _= ch;
+		i++;
+	}
+	for ( let part in split( rest, /\s+/ ) ) {
+		let clean := trim(part);
+		vars.push(substr(clean, 1)) if starts_with( clean, "?" );
+	}
+	return { vars: vars, aliases: aliases };
+}
+
+function _sparql_parse_aggregate ( String raw ) {
+	let clean := trim(raw);
+	return null unless clean ~ /^([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*)\)$/;
+	let m := clean ~ /^([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*)\)$/;
+	let kind := uc(m[1]);
+	return null unless kind eq "COUNT" or kind eq "SUM" or kind eq "MIN" or
+		kind eq "MAX" or kind eq "AVG" or kind eq "SAMPLE" or
+		kind eq "GROUP_CONCAT";
+	let arg := trim(m[2]);
+	let distinct := false;
+	if ( _sparql_starts_keyword( arg, "DISTINCT" ) ) {
+		distinct := true;
+		arg := trim(substr( arg, 8 ));
+	}
+	let separator := " ";
+	if ( kind eq "GROUP_CONCAT" and contains( uc(arg), "SEPARATOR" ) ) {
+		let parts := split( arg, ";", 2 );
+		arg := trim(parts[0]);
+		if ( parts[1] ~ /SEPARATOR\s*=\s*("[^"]*")/i ) {
+			let sm := parts[1] ~ /SEPARATOR\s*=\s*("[^"]*")/i;
+			separator := ( new RDFReader(source: sm[1]) ).read_literal().get_value();
+		}
+	}
+	return {
+		kind: kind,
+		arg: arg,
+		distinct: distinct,
+		separator: separator,
+	};
+}
+
+function _sparql_parse_group_by ( String tail ) {
+	let vars := [];
+	if ( tail ~ /GROUP\s+BY\s+([\s\S]*)/i ) {
+		let m := tail ~ /GROUP\s+BY\s+([\s\S]*)/i;
+		let body := m[1];
+		if ( body ~ /^([\s\S]*?)\s+(HAVING|ORDER|LIMIT|OFFSET|VALUES)\b/i ) {
+			let stop := body ~ /^([\s\S]*?)\s+(HAVING|ORDER|LIMIT|OFFSET|VALUES)\b/i;
+			body := stop[1];
+		}
+		let i := 0;
+		while ( i < length body ) {
+			let ch := substr( body, i, 1 );
+			if ( ch ~ /\s/ ) {
+				i++;
+				next;
+			}
+			if ( ch eq "?" ) {
+				let rest := substr( body, i );
+				if ( rest ~ /^\?([A-Za-z][A-Za-z0-9_]*)/ ) {
+					let gm := rest ~ /^\?([A-Za-z][A-Za-z0-9_]*)/;
+					vars.push(gm[1]);
+					i += length gm[0];
+					next;
+				}
+			}
+			if ( ch eq "(" ) {
+				let close := _sparql_matching_paren( body, i );
+				if ( close > i ) {
+					let inner := trim(substr( body, i + 1, close - i - 1 ));
+					if ( inner ~ /^([\s\S]*)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)$/i ) {
+						let em := inner ~ /^([\s\S]*)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)$/i;
+						vars.push({ expr: trim(em[1]), var: em[2] });
+					}
+					i := close + 1;
+					next;
+				}
+			}
+			i++;
+		}
+	}
+	return vars;
+}
+
+function _sparql_parse_having ( String tail ) {
+	let out := [];
+	let pos := index( uc(tail), "HAVING" );
+	return out if pos < 0;
+	let rest := substr( tail, pos + 6 );
+	while ( trim(rest) ne "" ) {
+		let clean := trim(rest);
+		last if _sparql_starts_keyword( clean, "ORDER" ) or
+			_sparql_starts_keyword( clean, "LIMIT" ) or
+			_sparql_starts_keyword( clean, "OFFSET" ) or
+			_sparql_starts_keyword( clean, "VALUES" );
+		last unless starts_with( clean, "(" );
+		let close := _sparql_matching_paren( clean, 0 );
+		last if close < 0;
+		out.push(substr( clean, 1, close - 1 ));
+		rest := substr( clean, close + 1 );
+	}
+	return out;
+}
+
+function _sparql_parse_order_by ( String tail ) {
+	let out := [];
+	let pos := index( uc(tail), "ORDER" );
+	return out if pos < 0;
+	let rest := trim(substr( tail, pos + 5 ));
+	return out unless _sparql_starts_keyword( rest, "BY" );
+	rest := trim(substr( rest, 2 ));
+	if ( rest ~ /^([\s\S]*?)\s+(LIMIT|OFFSET|VALUES)\b/i ) {
+		let stop := rest ~ /^([\s\S]*?)\s+(LIMIT|OFFSET|VALUES)\b/i;
+		rest := stop[1];
+	}
+	let i := 0;
+	while ( i < length rest ) {
+		let clean := trim(substr( rest, i ));
+		last if clean eq "";
+		let desc := false;
+		if ( _sparql_starts_keyword( clean, "ASC" ) or
+			_sparql_starts_keyword( clean, "DESC" )
+		) {
+			desc := _sparql_starts_keyword( clean, "DESC" );
+			let open := index( clean, "(" );
+			let close := open < 0 ? -1 : _sparql_matching_paren( clean, open );
+			if ( close > open ) {
+				out.push({
+					expr: substr( clean, open + 1, close - open - 1 ),
+					desc: desc,
+				});
+				i += close + 1;
+				next;
+			}
+		}
+		if ( starts_with( clean, "?" ) and clean ~ /^\?([A-Za-z][A-Za-z0-9_]*)/ ) {
+			let m := clean ~ /^\?([A-Za-z][A-Za-z0-9_]*)/;
+			out.push({ expr: m[0], desc: false });
+			i += length m[0];
+			next;
+		}
+		if ( starts_with( clean, "(" ) ) {
+			let close := _sparql_matching_paren( clean, 0 );
+			if ( close > 0 ) {
+				out.push({ expr: substr( clean, 1, close - 1 ), desc: false });
+				i += close + 1;
+				next;
+			}
+		}
+		last;
+	}
+	return out;
+}
+
+function _sparql_parse_dataset ( String head, Dict prefixes ) {
+	let defaults := [];
+	let named := [];
+	let rest := head;
+	while ( rest ~ /FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i ) {
+		let m := rest ~ /FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i;
+		let graph := _sparql_expand(m[2], prefixes);
+		if ( trim(m[1]) eq "" ) {
+			defaults.push(graph);
+		}
+		else {
+			named.push(graph);
+		}
+		rest := replace(
+			rest,
+			/FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i,
+			"",
+			"",
+		);
+	}
+	return { dataset_default: defaults, dataset_named: named };
+}
+
+function _sparql_parse_describe_targets ( String head, Dict prefixes ) {
+	let clean := trim(substr( trim(head), 8 ));
+	let where_pos := index( uc(clean), "WHERE" );
+	clean := trim(substr( clean, 0, where_pos )) if where_pos >= 0;
+	while ( clean ~ /FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i ) {
+		clean := replace(
+			clean,
+			/FROM\s+(NAMED\s+)?(<[^>]+>|[A-Za-z][A-Za-z0-9_-]*:[^\s{}]+)/i,
+			"",
+			"",
+		);
+	}
+	let out := [];
+	let all := false;
+	for ( let token in split( clean, " " ) ) {
+		let item := trim(token);
+		next if item eq "";
+		if ( item eq "*" ) {
+			all := true;
+			next;
+		}
+		out.push(_sparql_expand( item, prefixes ));
+	}
+	return { all: all, targets: out };
+}
+
+function _sparql_parse ( String query ) {
+	_sparql_validate_syntax(query);
+	let prep := _sparql_prefixes(query);
+	let text := prep{body};
+	let upper := uc(text);
+	let kind := starts_with( trim(upper), "ASK" )
+		? "ask"
+		: starts_with( trim(upper), "CONSTRUCT" )
+			? "construct"
+			: starts_with( trim(upper), "DESCRIBE" )
+				? "describe"
+				: "select";
+	if ( contains( upper, "INSERT" ) or contains( upper, "DELETE" ) or
+		contains( upper, "LOAD" ) or contains( upper, "CLEAR" ) or
+		contains( upper, "CREATE" ) or contains( upper, "DROP" )
+	) {
+		throw new SPARQLError(message: "SPARQL Update is not implemented");
+	}
+	let open := index( text, "{" );
+	let close := open < 0 ? -1 : _sparql_matching_brace( text, open );
+	let head := "";
+	let where := "";
+	let tail := "";
+	if ( kind eq "describe" and open < 0 ) {
+		head := text;
+		where := "";
+		tail := "";
+	}
+	if ( kind eq "construct" and open >= 0 ) {
+		let after_construct := trim(substr( trim(text), 9 ));
+		if ( starts_with( after_construct, "{" ) ) {
+			let template_close := _sparql_matching_brace( text, open );
+			let after_template := substr( text, template_close + 1 );
+			let where_open := index( after_template, "{" );
+			if ( where_open >= 0 ) {
+				open := template_close + 1 + where_open;
+				close := _sparql_matching_brace( text, open );
+				head := substr( text, 0, template_close + 1 );
+				where := substr( text, open + 1, close - open - 1 );
+				tail := substr( text, close + 1 );
+			}
+		}
+	}
+	if ( head eq "" ) {
+		throw new SPARQLError(message: "SPARQL WHERE block expected")
+			if open < 0 or close < open;
+		head := substr( text, 0, open );
+		where := substr( text, open + 1, close - open - 1 );
+		tail := substr( text, close + 1 );
+	}
+	let describe := kind eq "describe"
+		? _sparql_parse_describe_targets( head, prep{prefixes} )
+		: { all: false, targets: [] };
+	let group_text := where;
+	let values := _sparql_parse_values_blocks(
+		tail,
+		prep{prefixes},
+	);
+	where := _sparql_remove_values(where);
+	tail := _sparql_remove_values(tail);
+		let projection := _sparql_parse_select_projection(head);
+		let dataset := _sparql_parse_dataset( head, prep{prefixes} );
+		let vars := projection{vars};
+		let distinct := contains( uc(head), "DISTINCT" );
+		let select_all := kind eq "select" and contains( head, "*" );
+	let order_by := _sparql_parse_order_by(tail);
+		let group_by := _sparql_parse_group_by(tail);
+		let having := _sparql_parse_having(tail);
+	let filters := [];
+	while ( where ~ /FILTER\s*\(([^()]*)\)/i ) {
+		let m := where ~ /FILTER\s*\(([^()]*)\)/i;
+		filters.push(m[1]);
+		where := replace( where, /FILTER\s*\([^()]*\)/i, "", "" );
+	}
+	let optional := [];
+	while ( where ~ /OPTIONAL\s*\{([^{}]+)\}/i ) {
+		let m := where ~ /OPTIONAL\s*\{([^{}]+)\}/i;
+		optional.push(_sparql_parse_patterns(
+			m[1],
+			prep{prefixes},
+		));
+		where := replace( where, /OPTIONAL\s*\{[^{}]+\}/i, "", "" );
+	}
+	let patterns := [];
+	while ( where ~ /GRAPH\s+([^\s]+)\s*\{([^{}]+)\}/i ) {
+		let m := where ~ /GRAPH\s+([^\s]+)\s*\{([^{}]+)\}/i;
+		let g := _sparql_expand(m[1], prep{prefixes});
+		for ( let pattern in _sparql_parse_patterns( m[2], prep{prefixes}, g ) ) {
+			patterns.push(pattern);
+		}
+		where := replace( where, /GRAPH\s+[^\s]+\s*\{[^{}]+\}/i, "", "" );
+	}
+		try {
+			for ( let pattern in _sparql_parse_patterns( where, prep{prefixes} ) ) {
+				patterns.push(pattern);
+			}
+		}
+		catch {
+			patterns := [];
+		}
+	return {
+		kind: kind,
+		vars: vars,
+		patterns: patterns,
+		optional: optional,
+		filters: filters,
+			values: values,
+				where: group_text,
+			tail: tail,
+			aliases: projection{aliases},
+			template: kind eq "construct" ? trim(head) : "",
+				distinct: distinct,
+				select_all: select_all,
+				group_by: group_by,
+			having: having,
+			order_by: order_by,
+			dataset_default: dataset{dataset_default},
+			dataset_named: dataset{dataset_named},
+			describe_all: describe{all},
+			describe_targets: describe{targets},
+	limit: _sparql_limit_value( tail, "LIMIT" ),
+		offset: _sparql_limit_value( tail, "OFFSET" ),
+		prefixes: prep{prefixes},
+	};
+}
+
+function _binding_term ( binding, spec ) {
+	return null if spec instanceof Dict and spec.exists("wildcard");
+	return binding.get(spec{variable}, null)
+		if spec instanceof Dict and spec.exists("variable");
+	return spec;
+}
+
+function _sparql_graph_allows ( graph_spec, graph ) {
+	if ( graph_spec instanceof Dict and graph_spec.exists("default_graphs") ) {
+		for ( let item in graph_spec{default_graphs} ) {
+			return true if rdf_term_equals( item, graph );
+		}
+		return false;
+	}
+	return rdf_term_equals( graph_spec, graph )
+		if _sparql_is_term(graph_spec) and _sparql_is_term(graph);
+	return true if graph_spec == null;
+	return false;
+}
+
+function _sparql_find_quads ( RDFStore store, s, p, o, graph_spec ) {
+	if ( graph_spec instanceof Dict and graph_spec.exists("default_graphs") ) {
+		let out := [];
+		let seen := {};
+		for ( let graph in graph_spec{default_graphs} ) {
+			for ( let quad in store.find( s, p, o, graph ) ) {
+				let key := rdf_term_key(quad.get_subject()) _ "\n" _
+					rdf_term_key(quad.get_predicate()) _ "\n" _
+					rdf_term_key(quad.get_object());
+				next if seen.exists(key);
+				seen.set( key, true );
+				out.push(quad);
+			}
+		}
+		return out;
+	}
+	return store.find( s, p, o, graph_spec );
+}
+
+function _sparql_is_term ( value ) {
+	return value instanceof RDFIRI or value instanceof RDFBlank or
+		value instanceof RDFLiteral or value instanceof RDFDefaultGraph;
+}
+
+function _sparql_is_path_spec ( value ) {
+	return value instanceof Dict and value.exists("path");
+}
+
+function _bind_match ( binding, spec, term ) {
+	return binding if spec instanceof Dict and spec.exists("wildcard");
+	if ( spec instanceof Dict and spec.exists("variable") ) {
+		let name := spec{variable};
+		if ( binding.exists(name) ) {
+			return rdf_term_equals( binding.get(name), term ) ? binding : null;
+		}
+		let next_binding := {};
+		for ( let item_key in binding.keys() ) {
+			next_binding.set( item_key, binding.get(item_key) );
+		}
+		next_binding.set( name, term );
+		return next_binding;
+	}
+	return binding if spec instanceof Dict and spec.exists("default_graphs") and
+		_sparql_graph_allows( spec, term );
+	return null unless _sparql_is_term(spec) and _sparql_is_term(term);
+	return rdf_term_equals( spec, term ) ? binding : null;
+}
+
+function _sparql_push_unique_term ( Array out, seen, term ) {
+	let key := rdf_term_key(term);
+	return out if seen.exists(key);
+	seen.set( key, true );
+	out.push(term);
+	return out;
+}
+
+function _sparql_term_array_has ( Array array, term ) {
+	for ( let item in array ) {
+		return true if rdf_term_equals( item, term );
+	}
+	return false;
+}
+
+function _sparql_graph_nodes ( RDFStore store, graph ) {
+	let out := [];
+	let seen := {};
+	for ( let quad in _sparql_find_quads( store, null, null, null, graph ) ) {
+		_sparql_push_unique_term( out, seen, quad.get_subject() );
+		_sparql_push_unique_term( out, seen, quad.get_object() );
+	}
+	return out;
+}
+
+function _sparql_path_node_in_graph ( RDFStore store, term, graph ) {
+	return true if _sparql_find_quads( store, term, null, null, graph ).length() > 0;
+	return true if _sparql_find_quads( store, null, null, term, graph ).length() > 0;
+	return false;
+}
+
+function _sparql_path_zero ( RDFStore store, start, graph ) {
+	return _sparql_path_node_in_graph( store, start, graph ) ? [ start ] : [];
+}
+
+function _sparql_path_term ( item ) {
+	return item instanceof Dict and item.exists("term")
+		? item{term}
+		: item;
+}
+
+function _sparql_path_negated ( Array items, Boolean inverse, predicate ) {
+	for ( let item in items ) {
+		next unless item{inverse} == inverse;
+		return true if rdf_term_equals( _sparql_path_term(item), predicate );
+	}
+	return false;
+}
+
+function _sparql_path_direct ( RDFStore store, start, predicate, graph ) {
+	let out := [];
+	for ( let quad in _sparql_find_quads( store, start, predicate, null, graph ) ) {
+		out.push(quad.get_object());
+	}
+	return out;
+}
+
+function _sparql_path_inverse ( RDFStore store, start, predicate, graph ) {
+	let out := [];
+	for ( let quad in _sparql_find_quads( store, null, predicate, start, graph ) ) {
+		out.push(quad.get_subject());
+	}
+	return out;
+}
+
+function _sparql_path_negated_step ( RDFStore store, start, spec, graph ) {
+	let out := [];
+	let seen := {};
+	let has_direct := false;
+	let has_inverse := false;
+	for ( let item in spec{items} ) {
+		has_inverse := true if item{inverse};
+		has_direct := true unless item{inverse};
+	}
+	if ( has_direct ) {
+		for ( let quad in _sparql_find_quads( store, start, null, null, graph ) ) {
+			next if _sparql_path_negated(
+				spec{items},
+				false,
+				quad.get_predicate(),
+			);
+			_sparql_push_unique_term( out, seen, quad.get_object() );
+		}
+	}
+	if ( has_inverse ) {
+		for ( let quad in _sparql_find_quads( store, null, null, start, graph ) ) {
+			next if _sparql_path_negated(
+				spec{items},
+				true,
+				quad.get_predicate(),
+			);
+			_sparql_push_unique_term( out, seen, quad.get_subject() );
+		}
+	}
+	return out;
+}
+
+function _sparql_path_closure ( RDFStore store, start, spec, graph,
+	Boolean include_start ) {
+	let out := [];
+	let seen := {};
+	let queue := [];
+	if ( include_start and _sparql_path_node_in_graph( store, start, graph ) ) {
+		_sparql_push_unique_term( out, seen, start );
+	}
+	for ( let term in _sparql_path_endpoints( store, start, spec, graph ) ) {
+		_sparql_push_unique_term( out, seen, term );
+		queue.push(term);
+	}
+	let i := 0;
+	while ( i < queue.length() ) {
+		let current := queue[i];
+		for ( let term in _sparql_path_endpoints( store, current, spec, graph ) ) {
+			let before := out.length();
+			_sparql_push_unique_term( out, seen, term );
+			queue.push(term) if out.length() > before;
+		}
+		i++;
+	}
+	return out;
+}
+
+function _sparql_path_can_be_zero ( path ) {
+	return false unless _sparql_is_path_spec(path);
+	if ( path{path} eq "*" or path{path} eq "?" ) {
+		return true;
+	}
+	if ( path{path} eq "{}" ) {
+		return path{min} == 0;
+	}
+	if ( path{path} eq "alt" ) {
+		for ( let item in path{items} ) {
+			return true if _sparql_path_can_be_zero(item);
+		}
+	}
+	if ( path{path} eq "seq" ) {
+		for ( let item in path{items} ) {
+			return false unless _sparql_path_can_be_zero(item);
+		}
+		return true;
+	}
+	if ( path{path} eq "inv" ) {
+		return _sparql_path_can_be_zero(path{item});
+	}
+	return false;
+}
+
+function _sparql_path_repeat ( RDFStore store, start, spec, graph,
+	Number min, max ) {
+	return _sparql_path_zero( store, start, graph ) if min == 0 and max == 0;
+	return _sparql_path_closure( store, start, spec, graph, true )
+		if min == 0 and max == null;
+	return _sparql_path_closure( store, start, spec, graph, false )
+		if min == 1 and max == null;
+	let frontier := [ start ];
+	let out := [];
+	let seen := {};
+	let depth := 0;
+	while ( frontier.length() > 0 and ( max == null or depth < max ) ) {
+		if ( depth >= min ) {
+			for ( let term in frontier ) {
+				_sparql_push_unique_term( out, seen, term );
+			}
+		}
+		let next_frontier := [];
+		let next_seen := {};
+		for ( let term in frontier ) {
+			for ( let next_term in _sparql_path_endpoints(
+				store,
+				term,
+				spec,
+				graph,
+			) ) {
+				_sparql_push_unique_term( next_frontier, next_seen, next_term );
+			}
+		}
+		frontier := next_frontier;
+		depth++;
+	}
+	if ( depth >= min ) {
+		for ( let term in frontier ) {
+			_sparql_push_unique_term( out, seen, term );
+		}
+	}
+	return out;
+}
+
+function _sparql_path_endpoints ( RDFStore store, start, path, graph ) {
+	return _sparql_path_direct( store, start, path, graph )
+		unless _sparql_is_path_spec(path);
+	if ( path{path} eq "alt" ) {
+		let out := [];
+		for ( let item in path{items} ) {
+			for ( let term in _sparql_path_endpoints( store, start, item, graph ) ) {
+				out.push(term);
+			}
+		}
+		return out;
+	}
+	if ( path{path} eq "seq" ) {
+		let current := [ start ];
+		for ( let item in path{items} ) {
+			let next_terms := [];
+			for ( let term in current ) {
+				for ( let next_term in _sparql_path_endpoints(
+					store,
+					term,
+					item,
+					graph,
+				) ) {
+					next_terms.push(next_term);
+				}
+			}
+			current := next_terms;
+		}
+		return current;
+	}
+	if ( path{path} eq "inv" ) {
+		return _sparql_path_reverse_endpoints( store, start, path{item}, graph );
+	}
+	if ( path{path} eq "neg" ) {
+		return _sparql_path_negated_step( store, start, path, graph );
+	}
+	if ( path{path} eq "*" ) {
+		return _sparql_path_closure( store, start, path{item}, graph, true );
+	}
+	if ( path{path} eq "+" ) {
+		return _sparql_path_closure( store, start, path{item}, graph, false );
+	}
+	if ( path{path} eq "?" ) {
+		let out := _sparql_path_zero( store, start, graph );
+		for ( let term in _sparql_path_endpoints( store, start, path{item}, graph ) ) {
+			_sparql_push_unique_term( out, {}, term )
+				unless _sparql_term_array_has( out, term );
+		}
+		return out;
+	}
+	if ( path{path} eq "{}" ) {
+		return _sparql_path_repeat(
+			store,
+			start,
+			path{item},
+			graph,
+			path{min},
+			path{max},
+		);
+	}
+	throw new SPARQLError(message: "SPARQL property path not supported");
+}
+
+function _sparql_path_reverse_endpoints ( RDFStore store, start, path, graph ) {
+	return _sparql_path_inverse( store, start, path, graph )
+		unless _sparql_is_path_spec(path);
+	if ( path{path} eq "alt" ) {
+		let out := [];
+		for ( let item in path{items} ) {
+			for ( let term in _sparql_path_reverse_endpoints(
+				store,
+				start,
+				item,
+				graph,
+			) ) {
+				out.push(term);
+			}
+		}
+		return out;
+	}
+	if ( path{path} eq "seq" ) {
+		let current := [ start ];
+		let i := path{items}.length() - 1;
+		while ( i >= 0 ) {
+			let next_terms := [];
+			for ( let term in current ) {
+				for ( let next_term in _sparql_path_reverse_endpoints(
+					store,
+					term,
+					path{items}[i],
+					graph,
+				) ) {
+					next_terms.push(next_term);
+				}
+			}
+			current := next_terms;
+			i--;
+		}
+		return current;
+	}
+	if ( path{path} eq "inv" ) {
+		return _sparql_path_endpoints( store, start, path{item}, graph );
+	}
+	if ( path{path} eq "*" ) {
+		return _sparql_path_closure( store, start, path{item}, graph, true );
+	}
+	if ( path{path} eq "+" ) {
+		return _sparql_path_closure( store, start, path{item}, graph, false );
+	}
+	if ( path{path} eq "?" ) {
+		let out := _sparql_path_zero( store, start, graph );
+		for ( let term in _sparql_path_reverse_endpoints(
+			store,
+			start,
+			path{item},
+			graph,
+		) ) {
+			_sparql_push_unique_term( out, {}, term )
+				unless _sparql_term_array_has( out, term );
+		}
+		return out;
+	}
+	throw new SPARQLError(message: "SPARQL inverse property path not supported");
+}
+
+function _sparql_eval_path_pattern ( RDFStore store, Array bindings,
+	Array pattern ) {
+	let out := [];
+	for ( let binding in bindings ) {
+		let s := _binding_term( binding, pattern[0] );
+		let o := _binding_term( binding, pattern[2] );
+		let g := _binding_term( binding, pattern[3] );
+		let zero_path := _sparql_path_can_be_zero(pattern[1]);
+		let starts := [];
+		if ( s == null or s instanceof Dict ) {
+			starts := _sparql_graph_nodes( store, g );
+			if ( zero_path and not( pattern[2] instanceof Dict ) and
+				o != null and not( o instanceof Dict ) and
+				not _sparql_term_array_has( starts, o )
+			) {
+				starts.push(o);
+			}
+		}
+		else {
+			starts := [ s ];
+		}
+		for ( let start in starts ) {
+			let b1 := _bind_match( binding, pattern[0], start );
+			next if b1 == null;
+			let endpoints := _sparql_path_endpoints(
+				store,
+				start,
+				pattern[1],
+				g,
+			);
+			if ( zero_path and not _sparql_term_array_has( endpoints, start ) ) {
+				if ( not( pattern[0] instanceof Dict ) or
+					( not( pattern[2] instanceof Dict ) and
+						o != null and not( o instanceof Dict ) and
+						rdf_term_equals( o, start ) )
+				) {
+					endpoints.unshift(start);
+				}
+			}
+			for ( let term in endpoints ) {
+				next if o != null and not( o instanceof Dict ) and
+					not rdf_term_equals( o, term );
+				let b2 := _bind_match( b1, pattern[2], term );
+				next if b2 == null;
+				let b3 := _bind_match( b2, pattern[3], g );
+				next if b3 == null;
+				out.push(b3);
+			}
+		}
+	}
+	return out;
+}
+
+function _sparql_eval_patterns ( RDFStore store, Array patterns ) {
+	let bindings := [ {} ];
+	return _sparql_eval_patterns_from( store, patterns, bindings );
+}
+
+function _sparql_eval_patterns_from ( RDFStore store, Array patterns, Array bindings ) {
+	let current_bindings := bindings;
+	for ( let pattern in patterns ) {
+		let next_bindings := [];
+		if ( _sparql_is_path_spec(pattern[1]) ) {
+			current_bindings := _sparql_eval_path_pattern(
+				store,
+				current_bindings,
+				pattern,
+			);
+			next;
+		}
+		for ( let binding in current_bindings ) {
+			let s := _binding_term( binding, pattern[0] );
+			let p := _binding_term( binding, pattern[1] );
+			let o := _binding_term( binding, pattern[2] );
+			let g := _binding_term( binding, pattern[3] );
+			let rows := _sparql_find_quads(
+				store,
+				s instanceof Dict ? null : s,
+				p instanceof Dict ? null : p,
+				o instanceof Dict ? null : o,
+				g instanceof Dict and not g.exists("default_graphs") ? null : g,
+			);
+			for ( let quad in rows ) {
+				let b1 := _bind_match( binding, pattern[0], quad.get_subject() );
+				next if b1 == null;
+				let b2 := _bind_match( b1, pattern[1], quad.get_predicate() );
+				next if b2 == null;
+				let b3 := _bind_match( b2, pattern[2], quad.get_object() );
+				next if b3 == null;
+				let b4 := _bind_match( b3, pattern[3], quad.get_graph() );
+				next if b4 == null;
+				next_bindings.push(b4);
+			}
+		}
+		current_bindings := next_bindings;
+	}
+	return current_bindings;
+}
+
+function _sparql_filter_term ( binding, String raw, Dict prefixes ) {
+	let clean := trim(raw);
+	if ( starts_with( clean, "?" ) ) {
+		return binding.get(substr( clean, 1 ), null);
+	}
+	return _sparql_expand( clean, prefixes );
+}
+
+function _sparql_filter_ok ( binding, String raw, Dict prefixes ) {
+	let clean := trim(raw);
+	if ( clean ~ /^bound\s*\(\s*\?([A-Za-z][A-Za-z0-9_]*)\s*\)$/i ) {
+		let m := clean ~ /^bound\s*\(\s*\?([A-Za-z][A-Za-z0-9_]*)\s*\)$/i;
+		return binding.exists(m[1]);
+	}
+	let op := "";
+	let parts := [];
+	if ( contains( clean, "!=" ) ) {
+		op := "!=";
+		parts := split( clean, "!=", 2 );
+	}
+	else if ( contains( clean, "=" ) ) {
+		op := "=";
+		parts := split( clean, "=", 2 );
+	}
+	else {
+		throw new SPARQLError(message: "SPARQL FILTER expression not supported");
+	}
+	let left := _sparql_filter_term( binding, parts[0], prefixes );
+	let right := _sparql_filter_term( binding, parts[1], prefixes );
+	return false if left == null or right == null;
+	let same := rdf_term_equals( left, right );
+	return op eq "=" ? same : not same;
+}
+
+function _sparql_apply_filters ( Array bindings, Array filters, Dict prefixes ) {
+	return bindings if filters.length() == 0;
+	let out := [];
+	for ( let binding in bindings ) {
+		let ok := true;
+		for ( let filter in filters ) {
+			if ( not _sparql_filter_ok( binding, filter, prefixes ) ) {
+				ok := false;
+				last;
+			}
+		}
+		out.push(binding) if ok;
+	}
+	return out;
+}
+
+function _sparql_apply_optional ( RDFStore store, Array bindings, Array groups ) {
+	let current_bindings := bindings;
+	for ( let group in groups ) {
+		let out := [];
+		for ( let binding in current_bindings ) {
+			let matches := _sparql_eval_patterns_from( store, group, [ binding ] );
+			if ( matches.length() == 0 ) {
+				out.push(binding);
+			}
+			else {
+				for ( let match in matches ) {
+					out.push(match);
+				}
+			}
+		}
+		current_bindings := out;
+	}
+	return current_bindings;
+}
+
+function _sparql_merge_binding ( binding, row ) {
+	let out := {};
+	for ( let item_key in binding.keys() ) {
+		out.set( item_key, binding.get(item_key) );
+	}
+	for ( let item_key in row.keys() ) {
+		if ( out.exists(item_key) ) {
+			let left := out.get(item_key);
+			let right := row.get(item_key);
+			return null if left == null or right == null;
+			return null unless rdf_term_equals( left, right );
+		}
+		else {
+			out.set( item_key, row.get(item_key) );
+		}
+	}
+	return out;
+}
+
+function _sparql_apply_values ( Array bindings, Array blocks ) {
+	let current_bindings := bindings;
+	for ( let block in blocks ) {
+		let out := [];
+		for ( let binding in current_bindings ) {
+			for ( let row in block{rows} ) {
+				let merged := _sparql_merge_binding( binding, row );
+				out.push(merged) if merged != null;
+			}
+		}
+		current_bindings := out;
+	}
+	return current_bindings;
+}
+
+function _sparql_apply_aliases ( Array bindings, Array aliases, Dict prefixes ) {
+	return bindings if aliases.length() == 0;
+	let out := [];
+	for ( let binding in bindings ) {
+		let next_binding := _sparql_copy_binding(binding);
+		for ( let alias in aliases ) {
+			let value := _sparql_eval_expr( next_binding, alias{expr}, prefixes );
+			next_binding.set( alias{var}, value ) if value != null;
+		}
+		out.push(next_binding);
+	}
+	return out;
+}
+
+function _sparql_non_aggregate_aliases ( Array aliases ) {
+	let out := [];
+	for ( let alias in aliases ) {
+		out.push(alias) unless alias.exists("aggregate");
+	}
+	return out;
+}
+
+function _sparql_aggregate_aliases ( Array aliases ) {
+	let out := [];
+	for ( let alias in aliases ) {
+		out.push(alias) if alias.exists("aggregate");
+	}
+	return out;
+}
+
+function _sparql_group_var_name ( spec ) {
+	return spec{var} if spec instanceof Dict and spec.exists("var");
+	return spec;
+}
+
+function _sparql_prepare_group_bindings (
+	Array bindings,
+	Array vars,
+	Dict prefixes
+) {
+	return bindings if vars.length() == 0;
+	let out := [];
+	for ( let binding in bindings ) {
+		let next_binding := _sparql_copy_binding(binding);
+		for ( let spec in vars ) {
+			if ( spec instanceof Dict and spec.exists("expr") ) {
+				let value := _sparql_eval_expr( next_binding, spec{expr}, prefixes );
+				next_binding.set( spec{var}, value ) if value != null;
+			}
+		}
+		out.push(next_binding);
+	}
+	return out;
+}
+
+function _sparql_group_bindings ( Array bindings, Array vars ) {
+	let groups := {};
+	let order := [];
+	if ( vars.length() == 0 ) {
+		groups.set( "", bindings );
+		order.push("");
+		return { order: order, groups: groups };
+	}
+	for ( let binding in bindings ) {
+		let key := _binding_key( binding, vars );
+		if ( not groups.exists(key) ) {
+			groups.set( key, [] );
+			order.push(key);
+		}
+		groups.get(key).push(binding);
+	}
+	return { order: order, groups: groups };
+}
+
+function _sparql_group_seed ( Array rows, Array vars ) {
+	let out := {};
+	return out if rows.length() == 0;
+	let first := rows[0];
+	for ( let spec in vars ) {
+		let var_name := _sparql_group_var_name(spec);
+		out.set( var_name, first.get(var_name, null) )
+			if first.exists(var_name);
+	}
+	return out;
+}
+
+function _sparql_aggregate_values ( Array rows, alias, Dict prefixes ) {
+	let values := [];
+	let seen := {};
+	for ( let row in rows ) {
+		if ( alias{arg} eq "*" ) {
+			values.push(true);
+			next;
+		}
+		let value := _sparql_eval_expr( row, alias{arg}, prefixes );
+		next if value == null;
+		if ( alias{distinct} ) {
+			let key := _sparql_is_term(value) ? rdf_term_key(value) : "" _ value;
+			next if seen.exists(key);
+			seen.set( key, true );
+		}
+		values.push(value);
+	}
+	return values;
+}
+
+function _sparql_number_literal ( value ) {
+	return rdf_literal( "" _ value, "", rdf_iri(XSD_NS _ "integer") );
+}
+
+function _sparql_decimal_literal ( value ) {
+	return rdf_literal( "" _ value, "", rdf_iri(XSD_NS _ "decimal") );
+}
+
+function _sparql_numeric_rank ( value ) {
+	return 0 unless value instanceof RDFLiteral;
+	let datatype := value.get_datatype().get_value();
+	return 3 if datatype eq XSD_NS _ "double" or
+		datatype eq XSD_NS _ "float";
+	return 2 if datatype eq XSD_NS _ "decimal";
+	return 1 if _sparql_is_numeric_datatype(datatype);
+	return 0;
+}
+
+function _sparql_decimal_lexical ( value, Boolean force_fraction ) {
+	let text := sprint( "%.12f", value );
+	if ( contains( text, "." ) ) {
+		while ( ends_with( text, "0" ) and (
+			not force_fraction or not ends_with( text, ".0" )
+		) ) {
+			text := substr( text, 0, length(text) - 1 );
+		}
+		text := substr( text, 0, length(text) - 1 )
+			if ends_with( text, "." );
+	}
+	text _= ".0" if force_fraction and not contains( text, "." );
+	return text;
+}
+
+function _sparql_double_lexical ( value, Boolean avg ) {
+	let n := value < 0 ? -value : value;
+	let sign := value < 0 ? "-" : "";
+	if ( n > 0 and n < 1 ) {
+		let exp := 0;
+		while ( n < 1 ) {
+			n *= 10;
+			exp++;
+		}
+		return sign _ _sparql_decimal_lexical( n, true ) _ "E-" _ exp;
+	}
+	if ( n >= 10000 ) {
+		let exp := 0;
+		while ( n >= 10 ) {
+			n /= 10;
+			exp++;
+		}
+		return sign _ _sparql_decimal_lexical( n, true ) _ "E" _ exp;
+	}
+	return _sparql_decimal_lexical( value, false ) _ "E0"
+		if avg and value != int(value);
+	let text := "" _ value;
+	return text if contains( uc(text), "E" );
+	return _sparql_decimal_lexical( value, false );
+}
+
+function _sparql_numeric_result_literal ( value, Number rank, Boolean avg ) {
+	return rdf_literal(
+		_sparql_double_lexical(value, avg),
+		"",
+		rdf_iri(XSD_NS _ "double"),
+	) if rank >= 3;
+	return rdf_literal(
+		_sparql_decimal_lexical(value, avg),
+		"",
+		rdf_iri(XSD_NS _ "decimal"),
+	) if avg or rank == 2;
+	return rdf_literal(
+		"" _ int(value),
+		"",
+		rdf_iri(XSD_NS _ "integer"),
+	);
+}
+
+function _sparql_compare_terms ( left, right ) {
+	if ( _sparql_is_numeric_literal(left) and _sparql_is_numeric_literal(right) ) {
+		let l := _sparql_safe_numeric_value(left);
+		let r := _sparql_safe_numeric_value(right);
+		return 0 if l == null or r == null;
+		return -1 if l < r;
+		return 1 if l > r;
+		return 0;
+	}
+	return _sparql_scalar_string(left) cmp _sparql_scalar_string(right);
+}
+
+function _sparql_normalize_ordered_numeric ( value ) {
+	return value unless value instanceof RDFLiteral;
+	let datatype := value.get_datatype().get_value();
+	return value unless datatype eq XSD_NS _ "double" or
+		datatype eq XSD_NS _ "float";
+	let lexical := value.get_value();
+	return value unless contains( uc(lexical), "E" );
+	let parts := split( lexical, /[eE]/ );
+	return value unless parts.length() == 2;
+	return value if contains( parts[0], "." );
+	return rdf_literal(
+		parts[0] _ ".0E" _ parts[1],
+		value.get_lang(),
+		value.get_datatype(),
+	);
+}
+
+function _sparql_eval_aggregate_alias ( Array rows, alias, Dict prefixes ) {
+	let values := _sparql_aggregate_values( rows, alias, prefixes );
+	let kind := alias{aggregate};
+	return _sparql_number_literal(values.length()) if kind eq "COUNT";
+	return _sparql_number_literal(0) if values.length() == 0 and
+		( kind eq "SUM" or kind eq "AVG" );
+	if ( values.length() == 0 ) {
+		return null;
+	}
+	if ( kind eq "SAMPLE" ) {
+		return values[0];
+	}
+	if ( kind eq "GROUP_CONCAT" ) {
+		let parts := [];
+		for ( let value in values ) {
+			parts.push(_sparql_scalar_string(value));
+		}
+		return rdf_literal(join( alias{separator}, parts ));
+	}
+	if ( kind eq "MIN" ) {
+		let best := values[0];
+		for ( let value in values ) {
+			best := value if _sparql_compare_terms( value, best ) < 0;
+		}
+		return _sparql_normalize_ordered_numeric(best);
+	}
+	if ( kind eq "MAX" ) {
+		let best := values[0];
+		for ( let value in values ) {
+			best := value if _sparql_compare_terms( value, best ) > 0;
+		}
+		return _sparql_normalize_ordered_numeric(best);
+	}
+	if ( kind eq "SUM" or kind eq "AVG" ) {
+		let total := 0;
+		let rank := 1;
+		for ( let value in values ) {
+			rank := _sparql_numeric_rank(value)
+				if _sparql_numeric_rank(value) > rank;
+			let n := _sparql_safe_numeric_value(value);
+			return null if n == null;
+			total += n;
+		}
+		return _sparql_numeric_result_literal(total / values.length(), rank, true)
+			if kind eq "AVG";
+		return _sparql_numeric_result_literal(total, rank, false);
+	}
+	throw new SPARQLError(message: "SPARQL aggregate not supported");
+}
+
+function _sparql_eval_aggregate_expr (
+	Array rows,
+	binding,
+	String raw,
+	Dict prefixes
+) {
+	let clean := trim(_sparql_outer_parens(raw));
+	let or_op := _sparql_find_top_expr_operator( clean, [ "||" ] );
+	if ( or_op != null ) {
+		return _sparql_boolean_literal(
+			_sparql_effective_boolean(_sparql_eval_aggregate_expr(
+				rows,
+				binding,
+				substr( clean, 0, or_op{pos} ),
+				prefixes,
+			)) or _sparql_effective_boolean(_sparql_eval_aggregate_expr(
+				rows,
+				binding,
+				substr( clean, or_op{pos} + 2 ),
+				prefixes,
+			)),
+		);
+	}
+	let and_op := _sparql_find_top_expr_operator( clean, [ "&&" ] );
+	if ( and_op != null ) {
+		return _sparql_boolean_literal(
+			_sparql_effective_boolean(_sparql_eval_aggregate_expr(
+				rows,
+				binding,
+				substr( clean, 0, and_op{pos} ),
+				prefixes,
+			)) and _sparql_effective_boolean(_sparql_eval_aggregate_expr(
+				rows,
+				binding,
+				substr( clean, and_op{pos} + 2 ),
+				prefixes,
+			)),
+		);
+	}
+	let compare := _sparql_find_top_expr_operator(
+		clean,
+		[ "!=", "<=", ">=", "=", "<", ">" ],
+	);
+	if ( compare != null ) {
+		let left := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, 0, compare{pos} ),
+			prefixes,
+		);
+		let right := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, compare{pos} + length compare{op} ),
+			prefixes,
+		);
+		if ( compare{op} eq "=" or compare{op} eq "!=" ) {
+			let same := _sparql_same_value( left, right );
+			return _sparql_boolean_literal(compare{op} eq "=" ? same : not same);
+		}
+		let order := _sparql_order_compare(left, right);
+		return _sparql_boolean_literal(order < 0) if compare{op} eq "<";
+		return _sparql_boolean_literal(order > 0) if compare{op} eq ">";
+		return _sparql_boolean_literal(order <= 0) if compare{op} eq "<=";
+		return _sparql_boolean_literal(order >= 0);
+	}
+	let add := _sparql_find_top_expr_operator( clean, [ "+", "-" ] );
+	if ( add != null ) {
+		let left := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, 0, add{pos} ),
+			prefixes,
+		);
+		let right := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, add{pos} + length add{op} ),
+			prefixes,
+		);
+		return null if left == null or right == null;
+		return _sparql_numeric_expr_literal( left, right, add{op} );
+	}
+	let mul := _sparql_find_top_expr_operator( clean, [ "*", "/" ] );
+	if ( mul != null ) {
+		let left := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, 0, mul{pos} ),
+			prefixes,
+		);
+		let right := _sparql_eval_aggregate_expr(
+			rows,
+			binding,
+			substr( clean, mul{pos} + length mul{op} ),
+			prefixes,
+		);
+		return null if left == null or right == null;
+		return _sparql_numeric_expr_literal( left, right, mul{op} );
+	}
+	let aggregate := _sparql_parse_aggregate(clean);
+	if ( aggregate != null ) {
+		return _sparql_eval_aggregate_alias(
+			rows,
+			{
+				aggregate: aggregate{kind},
+				distinct: aggregate{distinct},
+				arg: aggregate{arg},
+				separator: aggregate{separator},
+			},
+			prefixes,
+		);
+	}
+	return _sparql_eval_expr( binding, clean, prefixes );
+}
+
+function _sparql_apply_aggregates ( Array bindings, Array group_vars,
+	Array aliases, Dict prefixes, Array having := [] ) {
+	let aggregate_aliases := _sparql_aggregate_aliases(aliases);
+	return bindings if aggregate_aliases.length() == 0 and
+		group_vars.length() == 0 and having.length() == 0;
+	let prepared := _sparql_prepare_group_bindings( bindings, group_vars, prefixes );
+	let grouped := _sparql_group_bindings( prepared, group_vars );
+	let out := [];
+	for ( let key in grouped{order} ) {
+		let rows := grouped{groups}.get(key);
+		let binding := _sparql_group_seed( rows, group_vars );
+		for ( let alias in aggregate_aliases ) {
+			let value := _sparql_eval_aggregate_alias( rows, alias, prefixes );
+			binding.set( alias{var}, value ) if value != null;
+		}
+		for ( let alias in _sparql_non_aggregate_aliases(aliases) ) {
+			let value := _sparql_eval_aggregate_expr(
+				rows,
+				binding,
+				alias{expr},
+				prefixes,
+			);
+			binding.set( alias{var}, value ) if value != null;
+		}
+		let keep := true;
+		for ( let expr in having ) {
+			keep := false unless _sparql_effective_boolean(
+				_sparql_eval_aggregate_expr( rows, binding, expr, prefixes ),
+			);
+		}
+		next unless keep;
+		out.push(binding);
+	}
+	return out;
+}
+
+function _binding_key ( binding, Array vars ) {
+	let parts := [];
+	for ( let spec in vars ) {
+		let var_name := _sparql_group_var_name(spec);
+		let value := binding.get(var_name, null);
+		parts.push(value == null ? "U|" : rdf_term_key(value));
+	}
+	return join( "\n", parts );
+}
+
+function _sparql_distinct ( Array bindings, Array vars ) {
+	let seen := {};
+	let out := [];
+	for ( let binding in bindings ) {
+		let key := _binding_key( binding, vars );
+		next if seen.exists(key);
+		seen.set( key, true );
+		out.push(binding);
+	}
+	return out;
+}
+
+function _sparql_all_vars ( Array bindings ) {
+	let seen := {};
+	let out := [];
+	for ( let binding in bindings ) {
+		for ( let var_name in binding.keys() ) {
+			next if starts_with( var_name, "__" );
+			next if seen.exists(var_name);
+			seen.set( var_name, true );
+			out.push(var_name);
+		}
+	}
+	return out.sort( fn ( a, b ) -> a cmp b );
+}
+
+function _sparql_slice ( Array bindings, offset, limit ) {
+	let out := [];
+	let start := offset == null ? 0 : offset;
+	let stop := limit == null ? bindings.length() : start + limit;
+	let i := start;
+	while ( i < bindings.length() and i < stop ) {
+		out.push(bindings[i]);
+		i++;
+	}
+	return out;
+}
+
+function _sparql_fresh_blank ( String label ) {
+	_sparql_bnode_counter++;
+	return rdf_blank("sparql-construct-" _ _sparql_bnode_counter _ "-" _ label);
+}
+
+function _sparql_construct_term ( binding, spec, blanks ) {
+	if ( spec instanceof Dict and spec.exists("variable") ) {
+		let var_name := spec{variable};
+		if ( binding.exists(var_name) ) {
+			return binding.get(var_name);
+		}
+		return null unless starts_with( var_name, "__" );
+		let key := "var:" _ var_name;
+		blanks.set( key, _sparql_fresh_blank(var_name) )
+			unless blanks.exists(key);
+		return blanks.get(key);
+	}
+	if ( spec instanceof RDFBlank ) {
+		let key := "blank:" _ spec.get_value();
+		blanks.set( key, _sparql_fresh_blank(spec.get_value()) )
+			unless blanks.exists(key);
+		return blanks.get(key);
+	}
+	return spec;
+}
+
+function _sparql_construct_quads ( String query, parsed, Array bindings ) {
+	let text := parsed{template};
+	let template := "";
+	if ( _sparql_starts_keyword( text, "CONSTRUCT" ) ) {
+		let after := trim(substr( text, 9 ));
+		if ( starts_with( after, "{" ) ) {
+			template := _sparql_extract_braced(after){body};
+		}
+		else {
+			template := parsed{where};
+		}
+	}
+	else {
+		template := parsed{where};
+	}
+	while ( template ~ /FILTER\s*\([^()]*\)/i ) {
+		template := replace( template, /FILTER\s*\([^()]*\)/i, "", "" );
+	}
+	let patterns := _sparql_parse_patterns( template, parsed{prefixes} );
+	let out := [];
+	let seen := {};
+	for ( let binding in bindings ) {
+		let blanks := {};
+		for ( let pattern in patterns ) {
+			let s := _sparql_construct_term( binding, pattern[0], blanks );
+			let p := _sparql_construct_term( binding, pattern[1], blanks );
+			let o := _sparql_construct_term( binding, pattern[2], blanks );
+			let g := _sparql_construct_term( binding, pattern[3], blanks );
+			next if s == null or p == null or o == null or g == null;
+			next unless _sparql_is_term(s) and _sparql_is_term(p) and
+				_sparql_is_term(o) and _sparql_is_term(g);
+			let quad := rdf_quad( s, p, o, g );
+			let key := rdf_term_key(s) _ "\t" _ rdf_term_key(p) _ "\t" _
+				rdf_term_key(o) _ "\t" _ rdf_term_key(g);
+			next if seen.exists(key);
+			seen.set( key, true );
+			out.push(quad);
+		}
+	}
+	return out;
+}
+
+function _sparql_describe_add ( RDFStore store, Array quads, seen, term ) {
+	if ( not( term instanceof RDFIRI or term instanceof RDFBlank ) ) {
+		return null;
+	}
+	for ( let quad in store.find(term) ) {
+		let key := rdf_term_key(quad.get_subject()) _ "\n" _
+			rdf_term_key(quad.get_predicate()) _ "\n" _
+			rdf_term_key(quad.get_object()) _ "\n" _
+			rdf_term_key(quad.get_graph());
+		next if seen.exists(key);
+		seen.set( key, true );
+		quads.push(quad);
+	}
+}
+
+function _sparql_describe_quads ( RDFStore store, parsed, Array bindings ) {
+	let quads := [];
+	let seen := {};
+	for ( let target in parsed{describe_targets} ) {
+		_sparql_describe_add( store, quads, seen, target )
+			unless target instanceof Dict;
+	}
+	for ( let binding in bindings ) {
+		if ( parsed{describe_all} ) {
+			for ( let item_key in binding.keys() ) {
+				_sparql_describe_add(
+					store,
+					quads,
+					seen,
+					binding.get(item_key),
+				);
+			}
+		}
+		for ( let target in parsed{describe_targets} ) {
+			if ( target instanceof Dict and target.exists("variable") ) {
+				_sparql_describe_add(
+					store,
+					quads,
+					seen,
+					binding.get( target{variable}, null ),
+				);
+			}
+		}
+	}
+	return quads;
+}
+
+function sparql_query ( RDFStore store, String query, inherited_dataset := null ) {
+	let parsed := _sparql_parse(query);
+	if ( inherited_dataset != null ) {
+		if ( parsed{dataset_default}.length() == 0 ) {
+			parsed{dataset_default} := inherited_dataset.get( "default", [] );
+		}
+		if ( parsed{dataset_named}.length() == 0 ) {
+			parsed{dataset_named} := inherited_dataset.get( "named", [] );
+		}
+	}
+	parsed{prefixes}.set( "__dataset_default", parsed{dataset_default} );
+	parsed{prefixes}.set( "__dataset_named", parsed{dataset_named} );
+	let bindings := [];
+	if ( parsed{dataset_default}.length() > 0 ) {
+		bindings := _sparql_eval_group_text(
+			store,
+			parsed{where},
+			parsed{prefixes},
+			[ {} ],
+			{ default_graphs: parsed{dataset_default} },
+		);
+	}
+	else {
+		bindings := _sparql_eval_group_text(
+			store,
+			parsed{where},
+			parsed{prefixes},
+			[ {} ],
+		);
+	}
+	bindings := _sparql_apply_aliases(
+		bindings,
+		_sparql_non_aggregate_aliases(parsed{aliases}),
+		parsed{prefixes},
+	);
+	bindings := _sparql_apply_values( bindings, parsed{values} );
+	bindings := _sparql_apply_aggregates(
+		bindings,
+		parsed{group_by},
+		parsed{aliases},
+		parsed{prefixes},
+		parsed{having},
+	);
+	if ( parsed{select_all} ) {
+		parsed{vars} := _sparql_all_vars(bindings);
+	}
+	if ( parsed{order_by}.length() > 0 ) {
+		let order_items := parsed{order_by};
+		let prefixes := parsed{prefixes};
+		bindings := bindings.sort( function ( left, right ) {
+			for ( let item in order_items ) {
+				let l := _sparql_eval_expr( left, item{expr}, prefixes );
+				let r := _sparql_eval_expr( right, item{expr}, prefixes );
+				let lk := l == null ? "" : rdf_term_key(l);
+				let rk := r == null ? "" : rdf_term_key(r);
+				if ( lk ne rk ) {
+					return rk cmp lk if item{desc};
+					return lk cmp rk;
+				}
+			}
+			return 0;
+		});
+	}
+	bindings := _sparql_distinct( bindings, parsed{vars} )
+		if parsed{distinct};
+	bindings := _sparql_slice( bindings, parsed{offset}, parsed{limit} );
+	if ( parsed{kind} eq "ask" ) {
+		return { type: "ask", boolean: bindings.length() > 0 };
+	}
+	if ( parsed{kind} eq "construct" ) {
+		return {
+			type: "construct",
+			quads: _sparql_construct_quads( query, parsed, bindings ),
+		};
+	}
+	if ( parsed{kind} eq "describe" ) {
+		return {
+			type: "describe",
+			quads: _sparql_describe_quads( store, parsed, bindings ),
+		};
+	}
+	let rows := [];
+	for ( let binding in bindings ) {
+		let row := {};
+		for ( let var_name in parsed{vars} ) {
+			row.set( var_name, binding.get(var_name, null) );
+		}
+		rows.push(row);
+	}
+	return { type: "select", variables: parsed{vars}, results: rows };
+}

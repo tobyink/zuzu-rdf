@@ -1,0 +1,91 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, XSD_NS, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/cast");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 cast manifest not vendored");
+	done_testing();
+}
+
+function _store () {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child("data.ttl"), into: store);
+	return store;
+}
+
+function _run ( String query_file ) {
+	return sparql_query(
+		_store(),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run(query_file),
+		root.child(result_file),
+	);
+}
+
+let cast_string := _run("cast-string.rq");
+is( cast_string{results}.length(), 31, "W3C cast string row count" );
+ok(
+	cast_string{results}[0]{string} == null or
+		cast_string{results}[0]{string}.get_datatype().get_value()
+			eq XSD_NS _ "string",
+	"W3C cast string produces string literal when bound",
+);
+ok(
+	_matches( "cast-string.rq", "cast-string.srx" ),
+	"W3C cast string exact results",
+);
+
+let cast_int := _run("cast-int.rq");
+let int_seen := false;
+for ( let row in cast_int{results} ) {
+	int_seen := true
+		if row{integer} != null and
+		row{integer}.get_datatype().get_value() eq XSD_NS _ "integer";
+}
+ok( int_seen, "W3C cast integer produces integer literal" );
+ok(
+	_matches( "cast-int.rq", "cast-int.srx" ),
+	"W3C cast integer exact results",
+);
+
+let cast_bool := _run("cast-bool.rq");
+let bool_seen := false;
+for ( let row in cast_bool{results} ) {
+	bool_seen := true
+		if row{boolean} != null and
+		row{boolean}.get_datatype().get_value() eq XSD_NS _ "boolean";
+}
+ok( bool_seen, "W3C cast boolean produces boolean literal" );
+ok(
+	_matches( "cast-bool.rq", "cast-bool.srx" ),
+	"W3C cast boolean exact results",
+);
+ok(
+	_matches( "cast-float.rq", "cast-float.srx" ),
+	"W3C cast float exact results",
+);
+ok(
+	_matches( "cast-double.rq", "cast-double.srx" ),
+	"W3C cast double exact results",
+);
+ok(
+	_matches( "cast-decimal.rq", "cast-decimal.srx" ),
+	"W3C cast decimal exact results",
+);
+
+done_testing();

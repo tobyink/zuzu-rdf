@@ -1,0 +1,321 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "db" );
+requires_capability( "fs" );
+
+from rdf import RDFStore, TurtleParser, rdf_iri, rdf_quad, sparql_query;
+from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+from std/db import DB;
+from std/io import Path;
+
+let root := new Path("tests/w3c/sparql/sparql11/property-path");
+
+if ( not root.child("manifest.ttl").exists() ) {
+	pass("W3C SPARQL 1.1 property-path manifest not vendored");
+	done_testing();
+}
+
+function _store ( String data_file ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	( new TurtleParser() ).parse_file(root.child(data_file), into: store);
+	return store;
+}
+
+function _empty_store () {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	return store;
+}
+
+function _named_store ( Array data_files ) {
+	let store := new RDFStore(dbh: DB.temp());
+	store.install_schema();
+	for ( let data_file in data_files ) {
+		let graph := rdf_iri(data_file);
+		for ( let quad in ( new TurtleParser() ).parse_file(root.child(data_file)) ) {
+			store.add_quad(rdf_quad(
+				quad.get_subject(),
+				quad.get_predicate(),
+				quad.get_object(),
+				graph,
+			));
+		}
+	}
+	return store;
+}
+
+function _run ( String data_file, String query_file ) {
+	return sparql_query(
+		_store(data_file),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _run_with_store ( RDFStore store, String query_file ) {
+	return sparql_query(
+		store,
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _run_empty ( String query_file ) {
+	return sparql_query(
+		_empty_store(),
+		root.child(query_file).slurp_utf8(),
+	);
+}
+
+function _matches ( String data_file, String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run( data_file, query_file ),
+		root.child(result_file),
+	);
+}
+
+function _matches_empty ( String query_file, String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run_empty(query_file),
+		root.child(result_file),
+	);
+}
+
+function _matches_with_store ( RDFStore store, String query_file,
+	String result_file ) {
+	return sparql_w3c_results_match_file(
+		_run_with_store( store, query_file ),
+		root.child(result_file),
+	);
+}
+
+let pp01 := _run( "pp01.ttl", "pp01.rq" );
+is( pp01{results}.length(), 1, "W3C property-path pp01 row count" );
+is(
+	pp01{results}[0]{x}.get_value(),
+	"http://www.example.org/instance#c",
+	"W3C property-path pp01 endpoint",
+);
+ok(
+	_matches( "pp01.ttl", "pp01.rq", "pp01.srx" ),
+	"W3C property-path pp01 exact results",
+);
+
+let pp02 := _run( "pp01.ttl", "pp02.rq" );
+is( pp02{results}.length(), 2, "W3C property-path pp02 star row count" );
+let pp02_values := [
+	pp02{results}[0]{x}.get_value(),
+	pp02{results}[1]{x}.get_value(),
+];
+ok(
+	"http://www.example.org/instance#a" in pp02_values,
+	"W3C property-path pp02 includes zero-length endpoint",
+);
+ok(
+	"http://www.example.org/instance#c" in pp02_values,
+	"W3C property-path pp02 includes reached endpoint",
+);
+ok(
+	_matches( "pp01.ttl", "pp02.rq", "pp02.srx" ),
+	"W3C property-path pp02 exact results",
+);
+
+let path_p1 := _run( "path-p1.ttl", "path-p1.rq" );
+is( path_p1{results}.length(), 3, "W3C property-path path-p1 row count" );
+let path_p1_values := [
+	path_p1{results}[0]{t}.get_value(),
+	path_p1{results}[1]{t}.get_value(),
+	path_p1{results}[2]{t}.get_value(),
+];
+ok(
+	"http://www.example.org/b" in path_p1_values,
+	"W3C property-path path-p1 includes direct p1 endpoint",
+);
+ok(
+	"http://www.example.org/c" in path_p1_values,
+	"W3C property-path path-p1 includes sequence endpoint",
+);
+ok(
+	"http://www.example.org/e" in path_p1_values,
+	"W3C property-path path-p1 includes second p1 endpoint",
+);
+ok(
+	_matches( "path-p1.ttl", "path-p1.rq", "path-p1.srx" ),
+	"W3C property-path path-p1 exact results",
+);
+
+let pp08 := _run( "pp08.ttl", "pp08.rq" );
+ok( pp08{boolean}, "W3C property-path pp08 inverse ASK" );
+ok(
+	_matches( "pp08.ttl", "pp08.rq", "pp08.srx" ),
+	"W3C property-path pp08 exact results",
+);
+
+let pp10 := _run( "pp10.ttl", "pp10.rq" );
+is( pp10{results}.length(), 1, "W3C property-path pp10 negated set row count" );
+is(
+	pp10{results}[0]{x}.get_value(),
+	"http://www.example.org/instance#d",
+	"W3C property-path pp10 negated set endpoint",
+);
+ok(
+	_matches( "pp10.ttl", "pp10.rq", "pp10.srx" ),
+	"W3C property-path pp10 exact results",
+);
+
+ok(
+	_matches( "pp03.ttl", "pp03.rq", "pp03.srx" ),
+	"W3C property-path pp03 exact results",
+);
+ok(
+	_matches_with_store( _named_store([ "pp061.ttl", "pp062.ttl" ]),
+		"pp06.rq", "pp06.srx" ),
+	"W3C property-path pp06 exact results",
+);
+ok(
+	_matches_with_store( _named_store([ "pp07.ttl" ]),
+		"pp06.rq", "pp07.srx" ),
+	"W3C property-path pp07 exact results",
+);
+ok(
+	_matches( "pp09.ttl", "pp09.rq", "pp09.srx" ),
+	"W3C property-path pp09 exact results",
+);
+ok(
+	_matches( "pp11.ttl", "pp11.rq", "pp11.srx" ),
+	"W3C property-path pp11 duplicate path exact results",
+);
+ok(
+	_matches( "pp11.ttl", "pp12.rq", "pp12.srx" ),
+	"W3C property-path pp12 exact results",
+);
+ok(
+	_matches( "pp14.ttl", "pp14.rq", "pp14.srx" ),
+	"W3C property-path pp14 exact results",
+);
+ok(
+	_matches( "pp16.ttl", "pp14.rq", "pp16.srx" ),
+	"W3C property-path pp16 exact results",
+);
+ok(
+	_matches( "data-diamond.ttl", "path-2-2.rq", "diamond-2.srx" ),
+	"W3C property-path pp21 diamond exact results",
+);
+ok(
+	_matches( "data-diamond-tail.ttl", "path-2-2.rq",
+		"diamond-tail-2.srx" ),
+	"W3C property-path pp23 diamond tail exact results",
+);
+ok(
+	_matches( "data-diamond-loop.ttl", "path-2-2.rq",
+		"diamond-loop-2.srx" ),
+	"W3C property-path pp25 diamond loop exact results",
+);
+ok(
+	_matches( "data-diamond-loop.ttl", "path-3-3.rq",
+		"diamond-loop-5a.srx" ),
+	"W3C property-path pp28a optional sequence exact results",
+);
+ok(
+	_matches( "path-p1.ttl", "path-p2.rq", "path-p2.srx" ),
+	"W3C property-path pp31 precedence exact results",
+);
+ok(
+	_matches( "path-p3.ttl", "path-p3.rq", "path-p3.srx" ),
+	"W3C property-path pp32 precedence exact results",
+);
+ok(
+	_matches( "path-p3.ttl", "path-p4.rq", "path-p4.srx" ),
+	"W3C property-path pp33 precedence exact results",
+);
+ok(
+	_matches_with_store(
+		_named_store([ "ng-01.ttl", "ng-02.ttl", "ng-03.ttl" ]),
+		"path-ng-01.rq",
+		"path-ng-01.srx",
+	),
+	"W3C property-path pp34 named graph exact results",
+);
+ok(
+	_matches_with_store(
+		_named_store([ "ng-01.ttl", "ng-02.ttl", "ng-03.ttl" ]),
+		"path-ng-02.rq",
+		"path-ng-01.srx",
+	),
+	"W3C property-path pp35 named graph filter exact results",
+);
+ok(
+	_matches( "clique3.ttl", "pp36.rq", "pp36.srx" ),
+	"W3C property-path pp36 bound endpoints exact results",
+);
+ok(
+	_matches( "pp37.ttl", "pp37.rq", "pp37.srx" ),
+	"W3C property-path pp37 nested star exact results",
+);
+
+let nps_a := _run( "nps_a.ttl", "nps_a.rq" );
+is( nps_a{results}.length(), 1, "W3C property-path nps_a row count" );
+is(
+	nps_a{results}[0]{s}.get_value(),
+	"http://example.org/sp",
+	"W3C property-path nps_a subject",
+);
+is(
+	nps_a{results}[0]{o}.get_value(),
+	"http://example.org/op",
+	"W3C property-path nps_a object",
+);
+ok(
+	_matches( "nps_a.ttl", "nps_a.rq", "nps_a.srx" ),
+	"W3C property-path nps_a exact results",
+);
+ok(
+	_matches( "nps_inverse.ttl", "nps_inverse.rq", "nps_inverse.srx" ),
+	"W3C property-path nps_inverse exact results",
+);
+ok(
+	_matches( "nps_direct_and_inverse.ttl", "nps_direct_and_inverse.rq",
+		"nps_direct_and_inverse.srx" ),
+	"W3C property-path nps_direct_and_inverse exact results",
+);
+ok(
+	_matches( "nps_a_inverse.ttl", "nps_a_inverse.rq",
+		"nps_a_inverse.srx" ),
+	"W3C property-path nps_a_inverse exact results",
+);
+
+let values_and_path := sparql_query(
+	_empty_store(),
+	root.child("values_and_path.rq").slurp_utf8(),
+);
+is(
+	values_and_path{results}.length(),
+	0,
+	"W3C property-path values_and_path does not invent zero-length node",
+);
+ok(
+	_matches_empty( "values_and_path.rq", "values_and_path.srx" ),
+	"W3C property-path values_and_path exact results",
+);
+ok(
+	_matches_empty( "zero_or_more_set_start.rq",
+		"zero_or_more_set_start.srx" ),
+	"W3C property-path zero_or_more_set_start exact results",
+);
+ok(
+	_matches_empty( "zero_or_more_set_end.rq",
+		"zero_or_more_set_end.srx" ),
+	"W3C property-path zero_or_more_set_end exact results",
+);
+ok(
+	_matches_empty( "zero_or_one_set_start.rq",
+		"zero_or_one_set_start.srx" ),
+	"W3C property-path zero_or_one_set_start exact results",
+);
+ok(
+	_matches_empty( "zero_or_one_set_end.rq",
+		"zero_or_one_set_end.srx" ),
+	"W3C property-path zero_or_one_set_end exact results",
+);
+
+done_testing();

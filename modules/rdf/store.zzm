@@ -1,0 +1,272 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/store - std/db-backed RDF quad store.
+
+=cut
+
+from rdf/term import
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFIRI,
+	RDFLiteral,
+	RDFQuad,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_term_hash,
+	rdf_term_kind;
+from std/db import DB;
+from std/string import join;
+
+function _ident ( String raw ) {
+	die "rdf: unsafe SQL identifier prefix" unless raw ~ /^[A-Za-z][A-Za-z0-9_]*$/;
+	return raw;
+}
+
+function _backend ( String raw ) {
+	let b := lc(raw);
+	return b if b eq "sqlite" or b eq "mysql" or b eq "postgresql";
+	die "rdf: unsupported backend '" _ raw _ "'";
+}
+
+class RDFStore {
+	let dbh with get := null;
+	let String backend with get := "sqlite";
+	let String prefix with get := "rdf_";
+
+	method __build__ () {
+		dbh := DB.temp() if dbh == null;
+		backend := _backend(backend);
+		prefix := _ident(prefix);
+	}
+
+	method _table ( String name ) {
+		return prefix _ name;
+	}
+
+	method install_schema () {
+		let first_install := not self.verify_schema(false);
+		dbh.prepare(
+			"create table if not exists " _ self._table("meta") _
+			" (k varchar(64) primary key, v varchar(255))",
+		).execute();
+		dbh.prepare(
+			"create table if not exists " _ self._table("terms") _
+			" (term_key varchar(128) primary key, kind varchar(16) not null, " _
+			"value text, lang varchar(64), datatype text)",
+		).execute();
+		dbh.prepare(
+			"create table if not exists " _ self._table("quads") _
+			" (s varchar(128) not null, p varchar(128) not null, " _
+			"o varchar(128) not null, g varchar(128) not null, " _
+			"primary key (s, p, o, g))",
+		).execute();
+		self._install_indexes() if first_install;
+		self._insert_meta( "schema_version", "1" );
+		return self;
+	}
+
+	method _install_indexes () {
+		let quads := self._table("quads");
+		dbh.prepare(
+			"create index " _ prefix _ "quads_pog on " _ quads _
+			" (p, o, g)",
+		).execute();
+		dbh.prepare(
+			"create index " _ prefix _ "quads_sp on " _ quads _
+			" (s, p)",
+		).execute();
+		dbh.prepare(
+			"create index " _ prefix _ "quads_gsp on " _ quads _
+			" (g, s, p)",
+		).execute();
+		return self;
+	}
+
+	method schema_version () {
+		let q := dbh.prepare(
+			"select v from " _ self._table("meta") _ " where k = ?",
+		);
+		q.execute("schema_version");
+		let row := q.next_array();
+		return row == null ? "" : row[0];
+	}
+
+	method verify_schema ( Boolean strict := true ) {
+		let ok := false;
+		try {
+			ok := self.schema_version() eq "1";
+		}
+		catch {
+			die "rdf: schema is not installed" if strict;
+			return false;
+		}
+		if ( not ok and strict ) {
+			die "rdf: unsupported or missing RDF store schema";
+		}
+		return ok;
+	}
+
+	method _insert_meta ( String k, String v ) {
+		let q := dbh.prepare(
+			"select v from " _ self._table("meta") _ " where k = ?",
+		);
+		q.execute(k);
+		if ( not q.next_array() ) {
+			dbh.prepare(
+				"insert into " _ self._table("meta") _ " (k, v) values (?, ?)",
+			).execute( k, v );
+		}
+		return self;
+	}
+
+	method drop_schema () {
+		dbh.prepare( "drop table if exists " _ self._table("quads") ).execute();
+		dbh.prepare( "drop table if exists " _ self._table("terms") ).execute();
+		dbh.prepare( "drop table if exists " _ self._table("meta") ).execute();
+		return self;
+	}
+
+	method add_term ( term ) {
+		let key := rdf_term_hash(term);
+		let q := dbh.prepare(
+			"select term_key from " _ self._table("terms") _ " where term_key = ?",
+		);
+		q.execute(key);
+		return key if q.next_array();
+
+		let kind := rdf_term_kind(term);
+		let value := "";
+		let lang := "";
+		let datatype := "";
+		if ( term instanceof RDFIRI or term instanceof RDFBlank ) {
+			value := term.get_value();
+		}
+		else if ( term instanceof RDFLiteral ) {
+			value := term.get_value();
+			lang := term.get_lang();
+			datatype := term.get_datatype().get_value();
+		}
+		dbh.prepare(
+			"insert into " _ self._table("terms") _
+			" (term_key, kind, value, lang, datatype) values (?, ?, ?, ?, ?)",
+		).execute( key, kind, value, lang, datatype );
+		return key;
+	}
+
+	method term_for_key ( String key ) {
+		if ( key eq rdf_term_hash(rdf_default_graph()) ) {
+			return rdf_default_graph();
+		}
+		let q := dbh.prepare(
+			"select kind, value, lang, datatype from " _ self._table("terms") _
+			" where term_key = ?",
+		);
+		q.execute(key);
+		let row := q.next_dict();
+		die "rdf: unknown term key" if row == null;
+		return rdf_iri(row{value}) if row{kind} eq "iri";
+		return rdf_blank(row{value}) if row{kind} eq "blank";
+		return rdf_default_graph() if row{kind} eq "default";
+		return rdf_literal(
+			row{value},
+			row{lang},
+			rdf_iri(row{datatype}),
+		);
+	}
+
+	method add_quad ( RDFQuad quad ) {
+		let s := self.add_term(quad.get_subject());
+		let p := self.add_term(quad.get_predicate());
+		let o := self.add_term(quad.get_object());
+		let g := self.add_term(quad.get_graph());
+		let exists := dbh.prepare(
+			"select s from " _ self._table("quads") _
+			" where s = ? and p = ? and o = ? and g = ?",
+		);
+		exists.execute( s, p, o, g );
+		if ( not exists.next_array() ) {
+			dbh.prepare(
+				"insert into " _ self._table("quads") _
+				" (s, p, o, g) values (?, ?, ?, ?)",
+			).execute( s, p, o, g );
+		}
+		return quad;
+	}
+
+	method add_quads ( Array quads ) {
+		for ( let quad in quads ) {
+			self.add_quad(quad);
+		}
+		return self;
+	}
+
+	method remove_quad ( RDFQuad quad ) {
+		dbh.prepare(
+			"delete from " _ self._table("quads") _
+			" where s = ? and p = ? and o = ? and g = ?",
+		).execute(
+			rdf_term_hash(quad.get_subject()),
+			rdf_term_hash(quad.get_predicate()),
+			rdf_term_hash(quad.get_object()),
+			rdf_term_hash(quad.get_graph()),
+		);
+		return self;
+	}
+
+	method find ( subject := null, predicate := null, object := null,
+	graph := null ) {
+		let clauses := [];
+		let binds := [];
+		if ( subject != null ) {
+			clauses.push("s = ?");
+			binds.push(rdf_term_hash(subject));
+		}
+		if ( predicate != null ) {
+			clauses.push("p = ?");
+			binds.push(rdf_term_hash(predicate));
+		}
+		if ( object != null ) {
+			clauses.push("o = ?");
+			binds.push(rdf_term_hash(object));
+		}
+		if ( graph != null ) {
+			clauses.push("g = ?");
+			binds.push(rdf_term_hash(graph));
+		}
+
+		let sql := "select s, p, o, g from " _ self._table("quads");
+		sql _= " where " _ join( " and ", clauses ) if clauses.length() > 0;
+		let q := dbh.prepare(sql);
+		if ( binds.length() == 0 ) {
+			q.execute();
+		}
+		else if ( binds.length() == 1 ) {
+			q.execute(binds[0]);
+		}
+		else if ( binds.length() == 2 ) {
+			q.execute( binds[0], binds[1] );
+		}
+		else if ( binds.length() == 3 ) {
+			q.execute( binds[0], binds[1], binds[2] );
+		}
+		else {
+			q.execute( binds[0], binds[1], binds[2], binds[3] );
+		}
+		let rows := q.all_dict();
+		let out := [];
+		for ( let row in rows ) {
+			out.push(rdf_quad(
+				self.term_for_key(row{s}),
+				self.term_for_key(row{p}),
+				self.term_for_key(row{o}),
+				self.term_for_key(row{g}),
+			));
+		}
+		return out;
+	}
+}
