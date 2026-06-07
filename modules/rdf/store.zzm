@@ -9,7 +9,7 @@ rdf/store - std/db-backed RDF quad store.
   from rdf/store import RDFStore;
   from rdf/term import rdf_iri, rdf_literal, rdf_quad;
   from std/db import DB;
-
+  
   let store := new RDFStore(dbh: DB.temp());
   store.install_schema();
   store.add_quad(rdf_quad(
@@ -17,7 +17,7 @@ rdf/store - std/db-backed RDF quad store.
       rdf_iri("http://example.com/p"),
       rdf_literal("value"),
   ));
-
+  
   let quads := store.find(rdf_iri("http://example.com/s"));
 
 

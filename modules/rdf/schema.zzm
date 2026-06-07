@@ -8,7 +8,7 @@ rdf/schema - RDFS vocabulary helpers and entailment store.
 
   from rdf/schema import RDFSchemaStore;
   from std/db import DB;
-
+  
   let store := new RDFSchemaStore(dbh: DB.temp());
   store.install_schema();
   let quads := store.find();  // includes inferred RDFS quads

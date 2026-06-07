@@ -7,7 +7,7 @@ rdf/serializer/ntriples - N-Triples serializer.
 =head1 SYNOPSIS
 
   from rdf/serializer/ntriples import NTriplesSerializer;
-
+  
   let text := (new NTriplesSerializer()).serialize(quads);
 
 

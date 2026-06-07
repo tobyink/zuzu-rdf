@@ -7,7 +7,7 @@ rdf/sparql/w3cresults - W3C SPARQL result-set comparison helpers.
 =head1 SYNOPSIS
 
   from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
-
+  
   ok(sparql_w3c_results_match_file(actual, result_path));
 
 

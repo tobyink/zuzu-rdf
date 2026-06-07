@@ -7,7 +7,7 @@ rdf/sparql/lexer - SPARQL 1.1 tokeniser.
 =head1 SYNOPSIS
 
   from rdf/sparql/lexer import sparql_lex;
-
+  
   let tokens := sparql_lex("SELECT * WHERE { ?s ?p ?o }");
 
 

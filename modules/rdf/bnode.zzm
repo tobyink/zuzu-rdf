@@ -7,7 +7,7 @@ rdf/bnode - Blank node scope utilities.
 =head1 SYNOPSIS
 
   from rdf/bnode import rdf_blank_scope;
-
+  
   let scope := rdf_blank_scope("row");
   let a := scope.fresh();
   let b := scope.fresh();

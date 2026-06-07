@@ -7,7 +7,7 @@ rdf/parser/nquads - N-Quads parser.
 =head1 SYNOPSIS
 
   from rdf/parser/nquads import NQuadsParser;
-
+  
   let parser := new NQuadsParser();
   let quads := parser.parse_string("<s> <p> \"o\" <g> .\n");
 

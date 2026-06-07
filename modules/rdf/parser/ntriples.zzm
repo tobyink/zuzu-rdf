@@ -7,7 +7,7 @@ rdf/parser/ntriples - N-Triples parser.
 =head1 SYNOPSIS
 
   from rdf/parser/ntriples import NTriplesParser;
-
+  
   let parser := new NTriplesParser();
   let quads := parser.parse_string("<s> <p> \"o\" .\n");
 

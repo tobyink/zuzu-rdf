@@ -7,7 +7,7 @@ rdf/serializer/nquads - N-Quads serializer.
 =head1 SYNOPSIS
 
   from rdf/serializer/nquads import NQuadsSerializer;
-
+  
   let text := (new NQuadsSerializer()).serialize(quads);
 
 

@@ -7,7 +7,7 @@ rdf/term - RDF terms and quads.
 =head1 SYNOPSIS
 
   from rdf/term import rdf_iri, rdf_literal, rdf_quad;
-
+  
   let quad := rdf_quad(
       rdf_iri("http://example.com/s"),
       rdf_iri("http://example.com/p"),

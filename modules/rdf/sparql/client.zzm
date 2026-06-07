@@ -7,7 +7,7 @@ rdf/sparql/client - SPARQL Protocol HTTP client.
 =head1 SYNOPSIS
 
   from rdf/sparql/client import SPARQLProtocolClient;
-
+  
   let client := new SPARQLProtocolClient(
       endpoint: "https://example.com/sparql",
   );

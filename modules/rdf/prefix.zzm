@@ -7,7 +7,7 @@ rdf/prefix - Namespace and prefix registry helpers.
 =head1 SYNOPSIS
 
   from rdf/prefix import RDFPrefixRegistry;
-
+  
   let prefixes := new RDFPrefixRegistry();
   prefixes.set("ex", "http://example.com/");
   let term := prefixes.expand("ex:thing");

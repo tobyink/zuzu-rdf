@@ -7,11 +7,11 @@ rdf/sparql - SPARQL query execution.
 =head1 SYNOPSIS
 
   from rdf/sparql import sparql_query, sparql_update;
-
+  
   let rows := sparql_query(store, """
   SELECT ?s WHERE { ?s ?p ?o }
   """);
-
+  
   sparql_update(store, """
   INSERT DATA { <s> <p> "o" . }
   """);

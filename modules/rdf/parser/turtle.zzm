@@ -7,7 +7,7 @@ rdf/parser/turtle - Turtle parser.
 =head1 SYNOPSIS
 
   from rdf/parser/turtle import TurtleParser;
-
+  
   let parser := new TurtleParser();
   let quads := parser.parse_string("""
   @prefix ex: <http://example.com/> .

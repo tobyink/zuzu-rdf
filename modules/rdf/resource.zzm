@@ -8,7 +8,7 @@ rdf/resource - Lightweight RDF resource wrappers.
 
   from rdf/resource import RDFResource;
   from rdf/term import rdf_iri, rdf_literal;
-
+  
   let alice := new RDFResource(
       store: store,
       term: rdf_iri("http://example.com/alice"),

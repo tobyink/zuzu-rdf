@@ -9,7 +9,7 @@ rdf/datatype - RDF literal value-space helpers.
   from rdf/datatype import rdf_literal_canonical, rdf_literal_compare;
   from rdf/term import rdf_literal, rdf_iri;
   from rdf/ns import XSD_NS;
-
+  
   let a := rdf_literal("01", datatype: rdf_iri(XSD_NS _ "integer"));
   let b := rdf_literal("1", datatype: rdf_iri(XSD_NS _ "integer"));
   ok(rdf_literal_compare(a, b) == 0);

@@ -7,7 +7,7 @@ rdf/vocab - Common RDF vocabulary helpers.
 =head1 SYNOPSIS
 
   from rdf/vocab import rdf_type, rdfs_class, xsd;
-
+  
   let type := rdf_type();
   let integer := xsd("integer");
 

@@ -8,7 +8,7 @@ rdf/builder - RDF graph builder DSL.
 
   from rdf/builder import RDFBuilder;
   from rdf/vocab import rdf_type;
-
+  
   let builder := new RDFBuilder();
   builder
       .prefix("ex", "http://example.com/")

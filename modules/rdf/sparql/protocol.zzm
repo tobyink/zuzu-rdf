@@ -7,7 +7,7 @@ rdf/sparql/protocol - SPARQL Protocol request handling.
 =head1 SYNOPSIS
 
   from rdf/sparql/protocol import SPARQLProtocolEndpoint;
-
+  
   let endpoint := new SPARQLProtocolEndpoint(store: store);
   let response := endpoint.handle({
       params: { query: "ASK { ?s ?p ?o }" },

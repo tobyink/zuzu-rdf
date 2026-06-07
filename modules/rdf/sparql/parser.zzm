@@ -7,7 +7,7 @@ rdf/sparql/parser - SPARQL 1.1 syntax parser.
 =head1 SYNOPSIS
 
   from rdf/sparql/parser import sparql_parse_ast;
-
+  
   let ast := sparql_parse_ast("ASK { ?s ?p ?o }");
 
 

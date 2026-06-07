@@ -7,7 +7,7 @@ rdf/parser/common - Shared RDF parser helpers.
 =head1 SYNOPSIS
 
   from rdf/parser/common import RDFReader;
-
+  
   let reader := new RDFReader(source: "<http://example.com/s>");
   let term := reader.read_iri();
 

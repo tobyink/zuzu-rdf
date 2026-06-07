@@ -7,7 +7,7 @@ rdf/parser/rdfxml - RDF/XML parser.
 =head1 SYNOPSIS
 
   from rdf/parser/rdfxml import RdfXmlParser;
-
+  
   let parser := new RdfXmlParser();
   let quads := parser.parse_file(path, base: "http://example.com/doc");
 

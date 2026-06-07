@@ -7,7 +7,7 @@ rdf/graph - RDF graph and dataset utility functions.
 =head1 SYNOPSIS
 
   from rdf/graph import rdf_graph_isomorphic, rdf_quads_union;
-
+  
   let combined := rdf_quads_union(left, right);
   ok(rdf_graph_isomorphic(actual, expected));
 

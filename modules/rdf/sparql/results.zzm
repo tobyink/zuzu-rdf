@@ -7,7 +7,7 @@ rdf/sparql/results - SPARQL result serializers.
 =head1 SYNOPSIS
 
   from rdf/sparql/results import sparql_results_serialize;
-
+  
   let json := sparql_results_serialize(result, "json");
 
 
