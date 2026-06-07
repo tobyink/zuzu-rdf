@@ -8,24 +8,24 @@ rdf/examples/builder-resource - using RDFBuilder and RDFResource
 
   from rdf import RDFBuilder, RDFResource, RDFStore, rdf_iri, rdf_type;
   from std/db import DB;
-
+  
   let ex := "http://example.com/";
   let builder := new RDFBuilder();
   builder
     .prefix( "ex", ex )
     .triple( "ex:alice", rdf_type(), "ex:Person" )
     .triple( "ex:alice", "ex:name", builder.literal("Alice") );
-
+  
   let store := new RDFStore(dbh: DB.temp());
   store.install_schema();
   builder.add_to(store);
-
+  
   let alice := new RDFResource(
     store: store,
     term: rdf_iri(ex _ "alice"),
   );
   alice.add( rdf_iri(ex _ "knows"), rdf_iri(ex _ "bob") );
-
+  
   say alice.value(rdf_iri(ex _ "name")).get_value();
 
 =cut

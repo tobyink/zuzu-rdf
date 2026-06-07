@@ -8,25 +8,25 @@ rdf/examples/parser-store-sparql - updating and querying a store with SPARQL
 
   from rdf import RDFStore, TurtleParser, sparql_query, sparql_update;
   from std/db import DB;
-
+  
   let store := new RDFStore( dbh: DB.temp() );
   store.install_schema();
-
+  
   ( new TurtleParser() ).parse_string( """
     @prefix ex: <http://example.com/> .
     ex:alice ex:name "Alice" .
   """, into: store );
-
+  
   sparql_update( store, """
     PREFIX ex: <http://example.com/>
     INSERT DATA { ex:alice ex:knows ex:bob . }
   """ );
-
+  
   let result := sparql_query( store, """
     PREFIX ex: <http://example.com/>
     ASK { ex:alice ex:knows ex:bob . }
   """ );
-
+  
   say result{boolean} ? "yes" : "no";
 
 =cut
