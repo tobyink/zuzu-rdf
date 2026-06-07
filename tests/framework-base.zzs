@@ -110,8 +110,8 @@ is(
 let stats := store.statistics();
 ok( stats{quad_count} >= 1, "statistics reports quad count" );
 is( stats{backend}, "sqlite", "statistics reports backend" );
-let diag := store.diagnostics();
-ok( diag{schema_ok}, "diagnostics reports schema status" );
+let diagnostics := store.diagnostics();
+ok( diagnostics{schema_ok}, "diagnostics reports schema status" );
 is(
 	store.explain_find( ex_s, ex_p ){index},
 	"rdf_quads_sp",

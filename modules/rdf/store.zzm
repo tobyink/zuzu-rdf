@@ -567,19 +567,19 @@ class RDFStore {
 
 	method explain_find ( subject := null, predicate := null,
 		object := null, graph := null ) {
-		let index := "primary";
+		let selected_index := "primary";
 		if ( graph != null and subject != null and predicate != null ) {
-			index := prefix _ "quads_gsp";
+			selected_index := prefix _ "quads_gsp";
 		}
 		else if ( predicate != null and object != null ) {
-			index := prefix _ "quads_pog";
+			selected_index := prefix _ "quads_pog";
 		}
 		else if ( subject != null and predicate != null ) {
-			index := prefix _ "quads_sp";
+			selected_index := prefix _ "quads_sp";
 		}
 		return {
 			backend: backend,
-			index: index,
+			index: selected_index,
 			subject_bound: subject != null,
 			predicate_bound: predicate != null,
 			object_bound: object != null,

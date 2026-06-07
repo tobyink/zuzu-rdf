@@ -263,11 +263,11 @@ function _w3c_read_srx ( path ) {
 		return { type: "ask", boolean: lc(boolean) eq "true" };
 	}
 	let vars := [];
-	for ( let var in doc.findnodes(
+	for ( let variable in doc.findnodes(
 		"/*[local-name()='sparql']/*[local-name()='head']" _
 		"/*[local-name()='variable']",
 	) ) {
-		vars.push(var.getAttribute("name"));
+		vars.push(variable.getAttribute("name"));
 	}
 	let rows := [];
 	for ( let result in doc.findnodes(
@@ -318,17 +318,17 @@ function _w3c_row_key ( Dict row, Array vars ) {
 	let parts := [];
 	let bnodes := {};
 	let bnode_index := 0;
-	for ( let var in vars ) {
-		let term := row.get( var, null );
+	for ( let variable in vars ) {
+		let term := row.get( variable, null );
 		if ( term instanceof RDFBlank ) {
 			if ( not bnodes.exists(term.get_value()) ) {
 				bnodes.set( term.get_value(), "b" _ bnode_index );
 				bnode_index++;
 			}
-			parts.push(var _ "=B|" _ bnodes.get(term.get_value()));
+			parts.push(variable _ "=B|" _ bnodes.get(term.get_value()));
 		}
 		else {
-			parts.push(var _ "=" _ _w3c_result_term_key(term));
+			parts.push(variable _ "=" _ _w3c_result_term_key(term));
 		}
 	}
 	return join( "\n", parts );

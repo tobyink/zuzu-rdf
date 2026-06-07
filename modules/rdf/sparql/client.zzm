@@ -203,11 +203,11 @@ function _sparql_client_parse_xml_results ( String text ) {
 		return { type: "ask", boolean: lc(boolean) eq "true" };
 	}
 	let vars := [];
-	for ( let var in doc.findnodes(
+	for ( let variable in doc.findnodes(
 		"/*[local-name()='sparql']/*[local-name()='head']" _
 		"/*[local-name()='variable']",
 	) ) {
-		vars.push(var.getAttribute("name"));
+		vars.push(variable.getAttribute("name"));
 	}
 	let rows := [];
 	for ( let result in doc.findnodes(
@@ -312,7 +312,9 @@ function _sparql_client_parse_tsv_results ( String text ) {
 	return { type: "ask", boolean: lc(lines[1]) eq "true" }
 		if lines.length() >= 2 and lc(lines[0]) eq "?boolean";
 	let vars := split( lines[0], "\t" ).map(
-		fn var -> starts_with( var, "?" ) ? substr( var, 1 ) : var,
+		fn variable -> starts_with( variable, "?" )
+			? substr( variable, 1 )
+			: variable,
 	);
 	let rows := [];
 	let i := 1;

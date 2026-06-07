@@ -170,7 +170,7 @@ function _sparql_protocol_graph_body ( result, String format ) {
 }
 
 class SPARQLProtocolEndpoint {
-	let RDFStore store with get := null;
+	let store with get := null;
 
 	method handle ( Dict request ) {
 		let params := request.get( "params", {} );

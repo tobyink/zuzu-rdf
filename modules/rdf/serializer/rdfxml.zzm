@@ -97,7 +97,7 @@ function _rdfxml_resource_item ( term ) {
 class RdfXmlSerializer {
 	let Dict namespaces with get := {};
 	let String indent with get := "\t";
-	let Array labelling with get := [ RDFS_NS _ "label" ];
+	let Array labelling with get := [];
 	let prefix_registry := null;
 	let used_prefixes := {};
 	let generated_namespaces := {};
@@ -108,6 +108,7 @@ class RdfXmlSerializer {
 	method __build__ () {
 		die "rdf: RDF/XML serializer indent must be whitespace"
 			unless indent ~ /^\s+$/;
+		labelling := [ RDFS_NS _ "label" ] if labelling.length() == 0;
 		prefix_registry := new RDFPrefixRegistry();
 		for ( let prefix in namespaces.keys() ) {
 			prefix_registry.set( prefix, namespaces.get(prefix) );

@@ -94,7 +94,7 @@ class TurtleSerializer {
 	let Array abbreviate with get := [];
 	let String indent with get := "\t";
 	let Number colspace with get := 20;
-	let Array labelling with get := [ RDFS_NS _ "label" ];
+	let Array labelling with get := [];
 	let Boolean repeats with get := false;
 	let String encoding with get := "utf8";
 	let prefix_registry := null;
@@ -107,6 +107,7 @@ class TurtleSerializer {
 			unless indent ~ /^\s+$/;
 		die "rdf: Turtle serializer encoding must be utf8 or ascii"
 			unless encoding eq "utf8" or encoding eq "ascii";
+		labelling := [ RDFS_NS _ "label" ] if labelling.length() == 0;
 		prefix_registry := new RDFPrefixRegistry();
 		for ( let prefix in namespaces.keys() ) {
 			prefix_registry.set( prefix, namespaces.get(prefix) );

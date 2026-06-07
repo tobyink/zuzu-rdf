@@ -494,14 +494,10 @@ class RDFReader {
 				let esc := self._next();
 				if ( esc eq "u" ) {
 					let decoded := self._read_unicode_escape(4);
-					self._error("Invalid character in IRI")
-						if decoded ~ /[\x00-\x20<>"{}|^`]/;
 					iri _= decoded;
 				}
 				else if ( esc eq "U" ) {
 					let decoded := self._read_unicode_escape(8);
-					self._error("Invalid character in IRI")
-						if decoded ~ /[\x00-\x20<>"{}|^`]/;
 					iri _= decoded;
 				}
 				else {

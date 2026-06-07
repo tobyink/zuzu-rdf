@@ -81,7 +81,7 @@ from rdf/term import
 from rdf/vocab import rdf_type;
 
 class RDFResource {
-	let RDFStore store with get := null;
+	let store with get := null;
 	let term with get := null;
 
 	method values ( predicate, graph := null ) {

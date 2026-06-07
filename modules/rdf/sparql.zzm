@@ -3572,7 +3572,7 @@ function _sparql_apply_aliases ( Array bindings, Array aliases, Dict prefixes ) 
 		let next_binding := _sparql_copy_binding(binding);
 		for ( let alias in aliases ) {
 			let value := _sparql_eval_expr( next_binding, alias{expr}, prefixes );
-			next_binding.set( alias{var}, value ) if value != null;
+			next_binding.set( alias.get("var"), value ) if value != null;
 		}
 		out.push(next_binding);
 	}
@@ -3596,7 +3596,7 @@ function _sparql_aggregate_aliases ( Array aliases ) {
 }
 
 function _sparql_group_var_name ( spec ) {
-	return spec{var} if spec instanceof Dict and spec.exists("var");
+	return spec.get("var") if spec instanceof Dict and spec.exists("var");
 	return spec;
 }
 
@@ -3612,7 +3612,7 @@ function _sparql_prepare_group_bindings (
 		for ( let spec in vars ) {
 			if ( spec instanceof Dict and spec.exists("expr") ) {
 				let value := _sparql_eval_expr( next_binding, spec{expr}, prefixes );
-				next_binding.set( spec{var}, value ) if value != null;
+				next_binding.set( spec.get("var"), value ) if value != null;
 			}
 		}
 		out.push(next_binding);
@@ -3956,7 +3956,7 @@ function _sparql_apply_aggregates ( Array bindings, Array group_vars,
 		let binding := _sparql_group_seed( rows, group_vars );
 		for ( let alias in aggregate_aliases ) {
 			let value := _sparql_eval_aggregate_alias( rows, alias, prefixes );
-			binding.set( alias{var}, value ) if value != null;
+			binding.set( alias.get("var"), value ) if value != null;
 		}
 		for ( let alias in _sparql_non_aggregate_aliases(aliases) ) {
 			let value := _sparql_eval_aggregate_expr(
@@ -3965,7 +3965,7 @@ function _sparql_apply_aggregates ( Array bindings, Array group_vars,
 				alias{expr},
 				prefixes,
 			);
-			binding.set( alias{var}, value ) if value != null;
+			binding.set( alias.get("var"), value ) if value != null;
 		}
 		let keep := true;
 		for ( let expr in having ) {
@@ -4454,14 +4454,12 @@ function _sparql_update_graph_management ( RDFStore store, String text,
 	Dict prefixes, String operation, Boolean silent ) {
 	let rest := trim(replace( text, /^[A-Za-z]+\s*/i, "", "" ));
 	rest := trim(substr( rest, 6 )) if _sparql_starts_keyword( rest, "SILENT" );
-	if ( _sparql_starts_keyword( rest, "GRAPH" ) ) {
+	if ( operation eq "CREATE" and _sparql_starts_keyword( rest, "GRAPH" ) ) {
 		let graph := _sparql_update_graph_operand( rest, prefixes );
-		if ( operation eq "CREATE" ) {
-			if ( store.graph_exists(graph) and not silent ) {
-				throw new SPARQLError(message: "SPARQL Update graph already exists");
-			}
-			return { operation: "create", graphs: 1, silent: silent };
+		if ( store.graph_exists(graph) and not silent ) {
+			throw new SPARQLError(message: "SPARQL Update graph already exists");
 		}
+		return { operation: "create", graphs: 1, silent: silent };
 	}
 	if ( not ( rest ~ /^(DEFAULT|GRAPH\s+\S+)\s+TO\s+(DEFAULT|GRAPH\s+\S+)$/i ) ) {
 		throw new SPARQLError(message: "SPARQL Update graph target expected")

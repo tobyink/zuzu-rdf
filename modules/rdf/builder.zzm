@@ -103,7 +103,7 @@ from rdf/term import
 	rdf_quad;
 
 class RDFBuilder {
-	let RDFPrefixRegistry prefixes with get := null;
+	let prefixes with get := null;
 	let Array quads with get := [];
 	let current_graph := null;
 
