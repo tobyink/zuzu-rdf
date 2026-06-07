@@ -14,6 +14,45 @@ rdf/sparql/protocol - SPARQL Protocol request handling.
       accept: "application/sparql-results+json",
   });
 
+Using with C<std/web>:
+
+  from rdf import RDFStore;
+  from rdf/sparql/protocol import SPARQLProtocolEndpoint;
+  from std/web import Request, Response, Routes;
+  
+  let store := RDFStore.temp();
+  store.install_schema();
+  
+  let sparql := new SPARQLProtocolEndpoint(store: store);
+  let routes := new Routes();
+  
+  routes.any("/sparql").to(
+      action: function ( req ) {
+          let handled := sparql.handle({
+              params: {
+                  query: req.param("query"),
+                  update: req.param("update"),
+              },
+              body: req.body_text() == null ? "" : req.body_text(),
+              content_type: req.content_type() == null
+                  ? ""
+                  : req.content_type(),
+              accept: req.header("Accept") == null
+                  ? "application/sparql-results+json"
+                  : req.header("Accept"),
+          });
+          return new Response(
+              status: handled{status},
+              headers: { "Content-Type": handled{content_type} },
+              body: [ handled{body} ],
+          );
+      },
+  );
+  
+  function __request__ ( env ) {
+      return routes.dispatch( new Request( env: env ) );
+  }
+
 
 =head1 DESCRIPTION
 
@@ -58,6 +97,8 @@ License version 2.
 
 from rdf/serializer/nquads import NQuadsSerializer;
 from rdf/serializer/ntriples import NTriplesSerializer;
+from rdf/serializer/rdfxml import RdfXmlSerializer;
+from rdf/serializer/turtle import TurtleSerializer;
 from rdf/sparql import sparql_query, sparql_update;
 from rdf/sparql/results import sparql_results_serialize;
 from rdf/store import RDFStore;
@@ -96,6 +137,9 @@ function _sparql_protocol_accept ( String accept, String fallback ) {
 		contains( lc_accept, "text/x-nquads" );
 	return "ntriples" if contains( lc_accept, "application/n-triples" ) or
 		contains( lc_accept, "text/plain" );
+	return "rdfxml" if contains( lc_accept, "application/rdf+xml" );
+	return "turtle" if contains( lc_accept, "text/turtle" ) or
+		contains( lc_accept, "application/turtle" );
 	return fallback;
 }
 
@@ -106,6 +150,8 @@ function _sparql_protocol_type ( String format, String result_type ) {
 	return "text/tab-separated-values" if format eq "tsv";
 	return "application/n-quads" if format eq "nquads";
 	return "application/n-triples" if format eq "ntriples";
+	return "application/rdf+xml" if format eq "rdfxml";
+	return "text/turtle" if format eq "turtle";
 	return result_type eq "update" ? "text/plain" : "application/sparql-results+json";
 }
 
@@ -113,6 +159,12 @@ function _sparql_protocol_graph_body ( result, String format ) {
 	let quads := result{quads};
 	if ( format eq "ntriples" ) {
 		return ( new NTriplesSerializer() ).serialize(quads);
+	}
+	if ( format eq "turtle" ) {
+		return ( new TurtleSerializer() ).serialize(quads);
+	}
+	if ( format eq "rdfxml" ) {
+		return ( new RdfXmlSerializer() ).serialize(quads);
 	}
 	return ( new NQuadsSerializer() ).serialize(quads);
 }

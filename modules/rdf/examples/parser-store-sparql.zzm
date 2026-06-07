@@ -7,9 +7,8 @@ rdf/examples/parser-store-sparql - updating and querying a store with SPARQL
 =head1 SYNOPSIS
 
   from rdf import RDFStore, TurtleParser, sparql_query, sparql_update;
-  from std/db import DB;
   
-  let store := new RDFStore( dbh: DB.temp() );
+  let store := RDFStore.temp();
   store.install_schema();
   
   ( new TurtleParser() ).parse_string( """

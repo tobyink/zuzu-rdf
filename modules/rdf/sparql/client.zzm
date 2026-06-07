@@ -24,7 +24,8 @@ syntax parsing to report operation names and counts.
 
 The client prefers SPARQL JSON results for C<SELECT> and C<ASK>, and
 N-Quads for graph results. It can also parse SPARQL XML, CSV, TSV,
-N-Triples, N-Quads, and Turtle responses when returned by the server.
+N-Triples, N-Quads, Turtle, and RDF/XML responses when returned by the
+server.
 
 =head1 EXPORTS
 
@@ -80,6 +81,7 @@ License version 2.
 
 from rdf/parser/nquads import NQuadsParser;
 from rdf/parser/ntriples import NTriplesParser;
+from rdf/parser/rdfxml import RdfXmlParser;
 from rdf/parser/turtle import TurtleParser;
 from rdf/sparql/parser import sparql_parse_ast;
 from rdf/term import
@@ -345,6 +347,9 @@ function _sparql_client_graph_result ( String query, String text,
 	else if ( contains( content_type, "n-triples" ) ) {
 		quads := ( new NTriplesParser() ).parse_string(text);
 	}
+	else if ( contains( content_type, "rdf+xml" ) ) {
+		quads := ( new RdfXmlParser() ).parse_string(text);
+	}
 	else {
 		quads := ( new TurtleParser() ).parse_string(text);
 	}
@@ -371,7 +376,8 @@ function _sparql_client_parse_query_response ( String query, response ) {
 	}
 	if ( contains( content_type, "n-quads" ) or
 		contains( content_type, "n-triples" ) or
-		contains( content_type, "turtle" ) ) {
+		contains( content_type, "turtle" ) or
+		contains( content_type, "rdf+xml" ) ) {
 		return _sparql_client_graph_result( query, text, content_type );
 	}
 	throw new SPARQLError(
@@ -444,8 +450,9 @@ class SPARQLProtocolClient {
 			"application/sparql-results+json, " _
 				"application/n-quads;q=0.9, " _
 				"application/n-triples;q=0.8, text/turtle;q=0.7, " _
-				"application/sparql-results+xml;q=0.6, " _
-				"text/tab-separated-values;q=0.5, text/csv;q=0.4",
+				"application/rdf+xml;q=0.6, " _
+				"application/sparql-results+xml;q=0.5, " _
+				"text/tab-separated-values;q=0.4, text/csv;q=0.3",
 			opts.get( "headers", {} ),
 		);
 		return _sparql_client_parse_query_response( query, response );

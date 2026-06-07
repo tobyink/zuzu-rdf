@@ -4,7 +4,9 @@ requires_capability( "db" );
 
 from rdf import
 	RDFStore,
+	RdfXmlParser,
 	SPARQLProtocolEndpoint,
+	TurtleParser,
 	XSD_NS,
 	rdf_default_graph,
 	rdf_iri,
@@ -176,6 +178,40 @@ like(
 	query_response{body},
 	/"boolean":true/,
 	"Protocol query serializes SPARQL JSON results",
+);
+let construct_response := endpoint.handle({
+	query: """
+PREFIX ex: <http://example.com/>
+CONSTRUCT { ex:prepared ex:p ?o } WHERE { ex:prepared ex:p ?o }
+""",
+	accept: "text/turtle",
+});
+is(
+	construct_response{content_type},
+	"text/turtle",
+	"Protocol negotiates Turtle graph results",
+);
+is(
+	( new TurtleParser() ).parse_string(construct_response{body}).length(),
+	1,
+	"Protocol Turtle graph result parses back",
+);
+let construct_xml_response := endpoint.handle({
+	query: """
+PREFIX ex: <http://example.com/>
+CONSTRUCT { ex:prepared ex:p ?o } WHERE { ex:prepared ex:p ?o }
+""",
+	accept: "application/rdf+xml",
+});
+is(
+	construct_xml_response{content_type},
+	"application/rdf+xml",
+	"Protocol negotiates RDF/XML graph results",
+);
+is(
+	( new RdfXmlParser() ).parse_string(construct_xml_response{body}).length(),
+	1,
+	"Protocol RDF/XML graph result parses back",
 );
 
 let update_response := endpoint.handle({

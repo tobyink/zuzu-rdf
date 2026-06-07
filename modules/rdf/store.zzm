@@ -8,9 +8,8 @@ rdf/store - std/db-backed RDF quad store.
 
   from rdf/store import RDFStore;
   from rdf/term import rdf_iri, rdf_literal, rdf_quad;
-  from std/db import DB;
   
-  let store := new RDFStore(dbh: DB.temp());
+  let store := RDFStore.temp();
   store.install_schema();
   store.add_quad(rdf_quad(
       rdf_iri("http://example.com/s"),
@@ -41,6 +40,10 @@ C<backend> of C<sqlite>, C<mysql>, or C<postgresql>. C<prefix> controls
 the table name prefix and defaults to C<rdf_>.
 
 =over
+
+=item C<< temp() >>
+
+Returns C<new RDFStore(dbh: DB.temp())>.
 
 =item C<< install_schema() >>
 
@@ -199,6 +202,10 @@ class RDFStore {
 	let dbh with get := null;
 	let String backend with get := "sqlite";
 	let String prefix with get := "rdf_";
+
+	static method temp () {
+		return new RDFStore(dbh: DB.temp());
+	}
 
 	method __build__ () {
 		dbh := DB.temp() if dbh == null;

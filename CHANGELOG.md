@@ -61,6 +61,14 @@ and this project roughly adheres to [Semantic Versioning](https://semver.org/spe
   an RDF builder DSL, and lightweight resource wrappers.
 - Example scripts for parser/store/SPARQL and builder/resource workflows,
   plus a published compliance matrix.
+- Pretty Turtle serializer with reusable serializer planning for subject
+  ordering, predicate ordering, RDF list detection, and safe blank-node
+  nesting.
+- Pretty RDF/XML serializer using the shared serializer planning for typed
+  node elements, configured labelling predicates, collection parseType
+  output, and safe blank-node nesting.
+- `RDFStore.temp()` convenience constructor for temporary `std/db` backed
+  stores.
 
 ### Fixed
 

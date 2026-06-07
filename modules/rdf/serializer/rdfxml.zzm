@@ -1,0 +1,383 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/rdfxml - Pretty RDF/XML serializer.
+
+=head1 SYNOPSIS
+
+  from rdf/serializer/rdfxml import RdfXmlSerializer;
+  
+  let xml := (new RdfXmlSerializer()).serialize(quads);
+
+
+=head1 DESCRIPTION
+
+C<RdfXmlSerializer> serializes default-graph RDF quads as RDF/XML. It uses
+the shared RDF serializer plan so subject ordering, predicate ordering,
+safe blank-node nesting, and RDF collection detection match the other
+human-oriented serializers.
+
+The serializer emits typed node elements when a subject has an IRI
+C<rdf:type>, nests blank nodes which are only the object of one triple,
+uses C<rdf:parseType="Collection"> for resource-only RDF lists, and falls
+back to explicit blank-node identifiers where nesting would be unsafe.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RdfXmlSerializer>
+
+=over
+
+=item C<< serialize(Array quads) >>
+
+Returns RDF/XML for the default graph in C<quads>.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Calls C<emit> with the serialized RDF/XML text when there is output.
+Returns the serializer.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/rdfxml >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import RDF_NS, RDFS_NS, XSD_NS;
+from rdf/prefix import RDFPrefixRegistry;
+from rdf/serializer/plan import rdf_serializer_plan;
+from rdf/term import
+	RDFBlank,
+	RDFIRI,
+	RDFLiteral,
+	rdf_term_key;
+from std/data/xml/escape import escape_xml;
+from std/string import rindex, split, substr;
+
+function _rdfxml_is_rdf_iri ( term, String local ) {
+	return term instanceof RDFIRI and term.get_value() eq RDF_NS _ local;
+}
+
+function _rdfxml_valid_xml_name ( String name ) {
+	return name ~ /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+}
+
+function _rdfxml_valid_qname ( String qname ) {
+	return qname ~ /^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$/;
+}
+
+function _rdfxml_split_iri ( String iri ) {
+	let hash := rindex( iri, "#" );
+	let slash := rindex( iri, "/" );
+	let pos := hash > slash ? hash : slash;
+	return null if pos < 0 or pos + 1 >= length iri;
+	let ns := substr( iri, 0, pos + 1 );
+	let local := substr( iri, pos + 1 );
+	return null unless _rdfxml_valid_xml_name(local);
+	return { ns: ns, local: local };
+}
+
+function _rdfxml_resource_item ( term ) {
+	return term instanceof RDFIRI or term instanceof RDFBlank;
+}
+
+class RdfXmlSerializer {
+	let Dict namespaces with get := {};
+	let String indent with get := "\t";
+	let Array labelling with get := [ RDFS_NS _ "label" ];
+	let prefix_registry := null;
+	let used_prefixes := {};
+	let generated_namespaces := {};
+	let Number generated_count := 0;
+	let bnode_labels := {};
+	let Number bnode_count := 0;
+
+	method __build__ () {
+		die "rdf: RDF/XML serializer indent must be whitespace"
+			unless indent ~ /^\s+$/;
+		prefix_registry := new RDFPrefixRegistry();
+		for ( let prefix in namespaces.keys() ) {
+			prefix_registry.set( prefix, namespaces.get(prefix) );
+		}
+		used_prefixes.set( "rdf", RDF_NS );
+	}
+
+	method _qname_known ( String iri ) {
+		let qname := prefix_registry.compact(iri);
+		return null if qname eq iri;
+		return null unless _rdfxml_valid_qname(qname);
+		let prefix := split( qname, ":", 2 )[0];
+		used_prefixes.set( prefix, prefix_registry.get(prefix) );
+		return qname;
+	}
+
+	method _qname ( String iri, Boolean required := true ) {
+		let known := self._qname_known(iri);
+		return known if known != null;
+		let parts := _rdfxml_split_iri(iri);
+		if ( parts == null ) {
+			die "rdf: cannot serialize IRI as RDF/XML QName: " _ iri
+				if required;
+			return null;
+		}
+		let prefix := generated_namespaces.get( parts{ns}, "" );
+		if ( prefix eq "" ) {
+			generated_count++;
+			prefix := "ns" _ generated_count;
+			generated_namespaces.set( parts{ns}, prefix );
+			prefix_registry.set( prefix, parts{ns} );
+		}
+		used_prefixes.set( prefix, parts{ns} );
+		return prefix _ ":" _ parts{local};
+	}
+
+	method _blank_id ( RDFBlank term ) {
+		let key := rdf_term_key(term);
+		if ( not bnode_labels.exists(key) ) {
+			bnode_count++;
+			bnode_labels.set( key, "B" _ bnode_count );
+		}
+		return bnode_labels.get(key);
+	}
+
+	method _attrs ( Array pairs ) {
+		let out := "";
+		for ( let pair in pairs ) {
+			out _= " " _ pair[0] _ "=\"" _ escape_xml(pair[1]) _ "\"";
+		}
+		return out;
+	}
+
+	method _subject_attrs ( term, Boolean nested ) {
+		return [] if nested and term instanceof RDFBlank;
+		if ( term instanceof RDFIRI ) {
+			return [[ "rdf:about", term.get_value() ]];
+		}
+		if ( term instanceof RDFBlank ) {
+			return [[ "rdf:nodeID", self._blank_id(term) ]];
+		}
+		die "rdf: RDF/XML subject must be IRI or blank node";
+	}
+
+	method _node_element ( Dict bunch ) {
+		for ( let triple in bunch{triples} ) {
+			if ( _rdfxml_is_rdf_iri( triple.get_predicate(), "type" ) and
+				triple.get_object() instanceof RDFIRI ) {
+				let qname := self._qname( triple.get_object().get_value(), false );
+				return { name: qname, skip: triple } if qname != null;
+			}
+		}
+		return { name: "rdf:Description", skip: null };
+	}
+
+	method _same_triple ( left, right ) {
+		return false if left == null or right == null;
+		return rdf_term_key(left.get_subject()) eq
+			rdf_term_key(right.get_subject()) and
+			rdf_term_key(left.get_predicate()) eq
+			rdf_term_key(right.get_predicate()) and
+			rdf_term_key(left.get_object()) eq
+			rdf_term_key(right.get_object());
+	}
+
+	method _literal_property (
+		String name,
+		RDFLiteral literal,
+		String current_indent
+	) {
+		let attrs := [];
+		if ( literal.get_lang() ne "" ) {
+			attrs.push([ "xml:lang", literal.get_lang() ]);
+		}
+		else if ( literal.get_datatype() instanceof RDFIRI and
+			literal.get_datatype().get_value() eq RDF_NS _ "XMLLiteral" ) {
+			attrs.push([ "rdf:parseType", "Literal" ]);
+			return current_indent _ "<" _ name _ self._attrs(attrs) _ ">" _
+				literal.get_value() _ "</" _ name _ ">\n";
+		}
+		else if ( literal.get_datatype() instanceof RDFIRI and
+			literal.get_datatype().get_value() ne XSD_NS _ "string" ) {
+			attrs.push([ "rdf:datatype", literal.get_datatype().get_value() ]);
+		}
+		return current_indent _ "<" _ name _ self._attrs(attrs) _ ">" _
+			escape_xml(literal.get_value()) _ "</" _ name _ ">\n";
+	}
+
+	method _list_is_resource_only ( Dict bunch ) {
+		for ( let item in bunch{list} ) {
+			return false unless _rdfxml_resource_item(item);
+		}
+		return true;
+	}
+
+	method _list_cells_done ( term, Dict plan ) {
+		let current := term;
+		let seen := {};
+		while ( current instanceof RDFBlank ) {
+			let key := rdf_term_key(current);
+			return null if seen.exists(key) or not plan{bunch_map}.exists(key);
+			seen.set( key, true );
+			let bunch := plan{bunch_map}.get(key);
+			bunch.set( "done", true );
+			let nexts := [];
+			for ( let triple in bunch{triples} ) {
+				nexts.push(triple.get_object())
+					if _rdfxml_is_rdf_iri( triple.get_predicate(), "rest" );
+			}
+			return null unless nexts.length() == 1;
+			current := nexts[0];
+		}
+	}
+
+	method _collection_property (
+		String name,
+		Dict bunch,
+		Dict plan,
+		String current_indent
+	) {
+		let out := current_indent _ "<" _ name _
+			" rdf:parseType=\"Collection\">\n";
+		for ( let item in bunch{list} ) {
+			if ( item instanceof RDFIRI ) {
+				out _= current_indent _ indent _
+					"<rdf:Description rdf:about=\"" _
+					escape_xml(item.get_value()) _ "\" />\n";
+			}
+			else {
+				let key := rdf_term_key(item);
+				if ( plan{bunch_map}.exists(key) ) {
+					out _= self._serialize_bunch(
+						plan{bunch_map}.get(key),
+						plan,
+						current_indent _ indent,
+						true,
+					);
+				}
+				else {
+					out _= current_indent _ indent _
+						"<rdf:Description />\n";
+				}
+			}
+		}
+		self._list_cells_done( bunch{subject}, plan );
+		out _= current_indent _ "</" _ name _ ">\n";
+		return out;
+	}
+
+	method _blank_property (
+		String name,
+		RDFBlank object,
+		Dict plan,
+		String current_indent
+	) {
+		let key := rdf_term_key(object);
+		if ( plan{bunch_map}.exists(key) ) {
+			let bunch := plan{bunch_map}.get(key);
+			if ( bunch{inline} and bunch{list} != null and not bunch{done} and
+				self._list_is_resource_only(bunch) ) {
+				return self._collection_property(
+					name,
+					bunch,
+					plan,
+					current_indent,
+				);
+			}
+			if ( bunch{inline} and not bunch{done} ) {
+				return current_indent _ "<" _ name _ ">\n" _
+					self._serialize_bunch(
+						bunch,
+						plan,
+						current_indent _ indent,
+						true,
+					) _
+					current_indent _ "</" _ name _ ">\n";
+			}
+		}
+		return current_indent _ "<" _ name _ " rdf:nodeID=\"" _
+			escape_xml(self._blank_id(object)) _ "\" />\n";
+	}
+
+	method _property ( triple, Dict plan, String current_indent ) {
+		let name := self._qname(triple.get_predicate().get_value());
+		let object := triple.get_object();
+		if ( object instanceof RDFIRI ) {
+			return current_indent _ "<" _ name _ " rdf:resource=\"" _
+				escape_xml(object.get_value()) _ "\" />\n";
+		}
+		if ( object instanceof RDFBlank ) {
+			return self._blank_property( name, object, plan, current_indent );
+		}
+		if ( object instanceof RDFLiteral ) {
+			return self._literal_property( name, object, current_indent );
+		}
+		die "rdf: cannot serialize graph term as RDF/XML object";
+	}
+
+	method _serialize_bunch (
+		Dict bunch,
+		Dict plan,
+		String current_indent := "",
+		Boolean nested := false
+	) {
+		bunch.set( "done", true );
+		let node := self._node_element(bunch);
+		let attrs := self._subject_attrs( bunch{subject}, nested );
+		let out := current_indent _ "<" _ node{name} _
+			self._attrs(attrs) _ ">\n";
+		for ( let triple in bunch{triples} ) {
+			next if self._same_triple( triple, node{skip} );
+			out _= self._property( triple, plan, current_indent _ indent );
+		}
+		out _= current_indent _ "</" _ node{name} _ ">\n";
+		return out;
+	}
+
+	method _prefixes () {
+		let attrs := [];
+		for ( let prefix in used_prefixes.keys().sort( fn ( a, b ) -> a cmp b ) ) {
+			attrs.push([ "xmlns:" _ prefix, used_prefixes.get(prefix) ]);
+		}
+		return self._attrs(attrs);
+	}
+
+	method serialize ( Array quads ) {
+		used_prefixes := { rdf: RDF_NS };
+		generated_namespaces := {};
+		generated_count := 0;
+		bnode_labels := {};
+		bnode_count := 0;
+		let plan := rdf_serializer_plan( quads, {
+			labelling: labelling,
+		});
+		let body := "";
+		for ( let bunch in plan{bunches} ) {
+			next if bunch{done};
+			next unless bunch{triples}.length() > 0;
+			body _= self._serialize_bunch( bunch, plan, indent, false );
+		}
+		return "" if body eq "";
+		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" _
+			"<rdf:RDF" _ self._prefixes() _ ">\n" _
+			body _
+			"</rdf:RDF>\n";
+	}
+
+	method serialize_each ( Array quads, Function emit ) {
+		let text := self.serialize(quads);
+		emit(text) if text ne "";
+		return self;
+	}
+}

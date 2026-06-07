@@ -9,12 +9,13 @@ rdf - RDF, Linked Data, and SPARQL facade.
   from rdf import
       RDFStore,
       RdfXmlParser,
+      RdfXmlSerializer,
       SPARQLProtocolClient,
+      TurtleSerializer,
       TurtleParser,
       sparql_query;
-  from std/db import DB;
   
-  let store := new RDFStore(dbh: DB.temp());
+  let store := RDFStore.temp();
   store.install_schema();
   
   (new TurtleParser()).parse_string("""
@@ -55,7 +56,8 @@ datatype helpers, graph/dataset helpers, and vocabulary helpers.
 =head2 Parsers And Serializers
 
 Exports C<NTriplesParser>, C<NQuadsParser>, C<TurtleParser>,
-C<RdfXmlParser>, C<NTriplesSerializer>, and C<NQuadsSerializer>.
+C<RdfXmlParser>, C<NTriplesSerializer>, C<NQuadsSerializer>,
+C<TurtleSerializer>, and C<RdfXmlSerializer>.
 
 =head2 SPARQL
 
@@ -131,6 +133,8 @@ from rdf/parser/rdfxml import RdfXmlParser;
 from rdf/resource import RDFResource;
 from rdf/serializer/ntriples import NTriplesSerializer;
 from rdf/serializer/nquads import NQuadsSerializer;
+from rdf/serializer/turtle import TurtleSerializer;
+from rdf/serializer/rdfxml import RdfXmlSerializer;
 from rdf/vocab import
 	owl,
 	owl_class,

@@ -1,0 +1,356 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/turtle - Pretty Turtle serializer.
+
+=head1 SYNOPSIS
+
+  from rdf/serializer/turtle import TurtleSerializer;
+  
+  let text := (new TurtleSerializer()).serialize(quads);
+
+
+=head1 DESCRIPTION
+
+C<TurtleSerializer> serializes default-graph RDF quads as RDF 1.1 Turtle.
+It uses the shared RDF serializer plan to group triples by subject, sort
+interesting subjects first, put C<rdf:type> and configured labelling
+predicates before other predicates, and inline blank nodes which are the
+object of at most one triple using Turtle C<[ ... ]> syntax.
+
+The output algorithm follows the broad shape of
+C<RDF::TrineX::Serializer::MockTurtleSoup>: predicates, class IRIs, and
+datatypes are abbreviated to QNames where possible; ordinary IRI subjects
+and objects remain full IRIs unless their namespace is explicitly listed
+for abbreviation.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<TurtleSerializer>
+
+=over
+
+=item C<< serialize(Array quads) >>
+
+Returns pretty Turtle for the default graph in C<quads>.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Calls C<emit> with the serialized Turtle text when there is output.
+Returns the serializer.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/turtle >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import RDF_NS, RDFS_NS, XSD_NS;
+from rdf/prefix import RDFPrefixRegistry;
+from rdf/serializer/ntriples import _nt_escape, _nt_escape_iri;
+from rdf/serializer/plan import rdf_serializer_plan;
+from rdf/term import
+	RDFBlank,
+	RDFIRI,
+	RDFLiteral,
+	rdf_term_key;
+from std/string import join, pad, replace, split, starts_with;
+
+function _turtle_is_rdf_iri ( term, String local ) {
+	return term instanceof RDFIRI and term.get_value() eq RDF_NS _ local;
+}
+
+function _turtle_same_predicate ( left, right ) {
+	return rdf_term_key(left.get_predicate()) eq rdf_term_key(right.get_predicate());
+}
+
+function _turtle_valid_qname ( String qname ) {
+	return qname ~ /^[A-Za-z_][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_.-]*$/ and
+		not( qname ~ /\.$/ );
+}
+
+function _turtle_matches_abbreviation ( String iri, Array abbreviate ) {
+	for ( let prefix in abbreviate ) {
+		return true if starts_with( iri, "" _ prefix );
+	}
+	return false;
+}
+
+class TurtleSerializer {
+	let Dict namespaces with get := {};
+	let Array abbreviate with get := [];
+	let String indent with get := "\t";
+	let Number colspace with get := 20;
+	let Array labelling with get := [ RDFS_NS _ "label" ];
+	let Boolean repeats with get := false;
+	let String encoding with get := "utf8";
+	let prefix_registry := null;
+	let used_prefixes := {};
+	let bnode_labels := {};
+	let Number bnode_count := 0;
+
+	method __build__ () {
+		die "rdf: Turtle serializer indent must be whitespace"
+			unless indent ~ /^\s+$/;
+		die "rdf: Turtle serializer encoding must be utf8 or ascii"
+			unless encoding eq "utf8" or encoding eq "ascii";
+		prefix_registry := new RDFPrefixRegistry();
+		for ( let prefix in namespaces.keys() ) {
+			prefix_registry.set( prefix, namespaces.get(prefix) );
+		}
+	}
+
+	method _qname ( String iri ) {
+		let qname := prefix_registry.compact(iri);
+		return null if qname eq iri;
+		return null unless _turtle_valid_qname(qname);
+		let prefix := split( qname, ":", 2 )[0];
+		used_prefixes.set( prefix, prefix_registry.get(prefix) );
+		return qname;
+	}
+
+	method _iri ( String iri, Boolean prefer_qname := false ) {
+		if ( prefer_qname or _turtle_matches_abbreviation( iri, abbreviate ) ) {
+			let qname := self._qname(iri);
+			return qname if qname != null;
+		}
+		return "<" _ _nt_escape_iri(iri) _ ">";
+	}
+
+	method _blank_label ( RDFBlank term ) {
+		let key := rdf_term_key(term);
+		if ( not bnode_labels.exists(key) ) {
+			bnode_count++;
+			bnode_labels.set( key, "_:B" _ bnode_count );
+		}
+		return bnode_labels.get(key);
+	}
+
+	method _quoted ( String text ) {
+		return "\"" _ _nt_escape(text) _ "\"";
+	}
+
+	method _literal ( RDFLiteral term ) {
+		let dt := term.get_datatype();
+		if ( term.get_lang() eq "" and dt instanceof RDFIRI ) {
+			let value := term.get_value();
+			let iri := dt.get_value();
+			if ( iri eq XSD_NS _ "integer" and
+				value ~ /^[+-]?[0-9]+$/ ) {
+				return value;
+			}
+			if ( iri eq XSD_NS _ "decimal" and
+				value ~ /^[+-]?[0-9]*\.[0-9]+$/ ) {
+				return value;
+			}
+			if ( iri eq XSD_NS _ "double" and
+				value ~ /^(?:[+-]?(?:[0-9]+\.[0-9]+|\.[0-9]+|[0-9]+))[Ee][+-]?[0-9]+$/ ) {
+				return value;
+			}
+			if ( iri eq XSD_NS _ "boolean" and
+				lc(value) in [ "true", "false" ] ) {
+				return lc(value);
+			}
+		}
+		let out := self._quoted(term.get_value());
+		out _= "@" _ term.get_lang() if term.get_lang() ne "";
+		if ( term.get_lang() eq "" and dt instanceof RDFIRI and
+			dt.get_value() ne XSD_NS _ "string" ) {
+			out _= "^^" _ self._iri( dt.get_value(), true );
+		}
+		return out;
+	}
+
+	method _predicate ( triple ) {
+		return "a" if _turtle_is_rdf_iri( triple.get_predicate(), "type" );
+		return self._iri( triple.get_predicate().get_value(), true );
+	}
+
+	method _term ( term, triple := null, String role := "object", Dict plan := {} ) {
+		if ( term instanceof RDFIRI ) {
+			if ( role eq "predicate" ) {
+				return self._iri( term.get_value(), true );
+			}
+			if ( role eq "object" and triple != null and
+				_turtle_is_rdf_iri( triple.get_predicate(), "type" ) ) {
+				return self._iri( term.get_value(), true );
+			}
+			if ( role eq "datatype" ) {
+				return self._iri( term.get_value(), true );
+			}
+			return self._iri( term.get_value(), false );
+		}
+		if ( term instanceof RDFBlank ) {
+			return self._blank_object( term, plan ) if role eq "object";
+			return self._blank_label(term);
+		}
+		if ( term instanceof RDFLiteral ) {
+			return self._literal(term);
+		}
+		die "rdf: cannot serialize graph term in Turtle";
+	}
+
+	method _list_cells_done ( term, Dict plan ) {
+		let current := term;
+		let seen := {};
+		while ( current instanceof RDFBlank ) {
+			let key := rdf_term_key(current);
+			return null if seen.exists(key) or not plan{bunch_map}.exists(key);
+			seen.set( key, true );
+			let bunch := plan{bunch_map}.get(key);
+			bunch.set( "done", true );
+			let nexts := [];
+			for ( let triple in bunch{triples} ) {
+				nexts.push(triple.get_object())
+					if _turtle_is_rdf_iri( triple.get_predicate(), "rest" );
+			}
+			return null unless nexts.length() == 1;
+			current := nexts[0];
+		}
+	}
+
+	method _list ( Dict bunch, Dict plan ) {
+		let items := [];
+		for ( let item in bunch{list} ) {
+			items.push(self._term( item, null, "object", plan ));
+		}
+		self._list_cells_done( bunch{subject}, plan );
+		return "( " _ join( " ", items ) _ " )";
+	}
+
+	method _blank_object ( RDFBlank term, Dict plan ) {
+		let key := rdf_term_key(term);
+		return self._blank_label(term) unless plan{bunch_map}.exists(key);
+		let bunch := plan{bunch_map}.get(key);
+		if ( bunch{inline} and bunch{list} != null and not bunch{done} ) {
+			return self._list( bunch, plan );
+		}
+		if ( bunch{inline} and not bunch{done} ) {
+			return "[]" unless bunch{triples}.length() > 0;
+			return self._serialize_bunch( bunch, plan, "", true );
+		}
+		return self._blank_label(term);
+	}
+
+	method _objects_for_predicate ( Array triples, Number start, Dict plan ) {
+		let objects := [];
+		let first := triples[start];
+		let i := start;
+		while ( i < triples.length() and
+			_turtle_same_predicate( first, triples[i] ) and
+			not repeats ) {
+			objects.push(self._term(
+				triples[i].get_object(),
+				triples[i],
+				"object",
+				plan,
+			));
+			i++;
+		}
+		if ( repeats ) {
+			objects.push(self._term(
+				first.get_object(),
+				first,
+				"object",
+				plan,
+			));
+			return { objects: objects, next: start + 1 };
+		}
+		return { objects: objects, next: i };
+	}
+
+	method _predicate_column ( String predicate, String current_indent ) {
+		return predicate if current_indent ne "";
+		return pad( predicate, colspace, " ", "right" );
+	}
+
+	method _compact_bracket ( String text ) {
+		return text unless length text < 60;
+		return text unless text ~ /^\[\n/;
+		let clean := replace( text, /^\[\n\s*/, "", "" );
+		clean := replace( clean, /\n\s*\]$/, "", "" );
+		return text if clean ~ /\n/;
+		clean := replace( clean, /;$/, "", "" );
+		return "[ " _ clean _ " ]";
+	}
+
+	method _serialize_bunch (
+		Dict bunch,
+		Dict plan,
+		String current_indent := "",
+		Boolean in_brackets := false
+	) {
+		bunch.set( "done", true );
+		let out := "";
+		let active_indent := current_indent;
+		if ( in_brackets ) {
+			out _= "[\n";
+			active_indent _= indent;
+		}
+		else {
+			out _= self._term( bunch{subject}, null, "subject", plan ) _ "\n";
+		}
+		let triples := bunch{triples};
+		let i := 0;
+		while ( i < triples.length() ) {
+			let triple := triples[i];
+			let pred := self._predicate(triple);
+			let group := self._objects_for_predicate( triples, i, plan );
+			out _= active_indent _ indent _
+				self._predicate_column( pred, active_indent ) _ " " _
+				join( ", ", group{objects} ) _ ";\n";
+			i := group{next};
+		}
+		if ( in_brackets ) {
+			out _= active_indent _ "]";
+			return self._compact_bracket(out);
+		}
+		out := replace( out, /;\n$/, ".\n", "" );
+		return out;
+	}
+
+	method _prefixes () {
+		let lines := [];
+		for ( let prefix in used_prefixes.keys().sort( fn ( a, b ) -> a cmp b ) ) {
+			lines.push( "@prefix " _ prefix _ ": <" _
+				_nt_escape_iri(used_prefixes.get(prefix)) _ "> ." );
+		}
+		return lines.length() == 0 ? "" : join( "\n", lines ) _ "\n\n";
+	}
+
+	method serialize ( Array quads ) {
+		used_prefixes := {};
+		bnode_labels := {};
+		bnode_count := 0;
+		let plan := rdf_serializer_plan( quads, {
+			labelling: labelling,
+		});
+		let body := "";
+		for ( let bunch in plan{bunches} ) {
+			next if bunch{done};
+			next unless bunch{triples}.length() > 0;
+			body _= self._serialize_bunch( bunch, plan, "", false ) _ "\n";
+		}
+		return "" if body eq "";
+		return self._prefixes() _ body;
+	}
+
+	method serialize_each ( Array quads, Function emit ) {
+		let text := self.serialize(quads);
+		emit(text) if text ne "";
+		return self;
+	}
+}

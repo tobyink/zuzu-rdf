@@ -13,6 +13,8 @@ normal and author-gated tests.
 | RDF/XML parser | Implemented | Author-gated W3C RDF 1.1 RDF/XML positive and negative syntax manifests plus focused local non-ASCII and feature tests. |
 | N-Triples serializer | Implemented | Local tests for escaped controls, escaped IRI characters, datatype IRIs, and invalid blank node labels. |
 | N-Quads serializer | Implemented | Local round-trip and graph serialization tests. |
+| Turtle serializer | Implemented | Local tests for prefix emission, MockTurtleSoup-style subject and predicate ordering, compact RDF lists, nested single-use blank nodes, and parser round trips. |
+| RDF/XML serializer | Implemented | Local tests for typed node elements, configured labelling predicates, nested single-use blank nodes, collection parseType output, and parser round trips. |
 
 ## SPARQL
 

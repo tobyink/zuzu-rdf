@@ -1,0 +1,288 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/plan - Shared RDF serializer graph planning.
+
+=head1 SYNOPSIS
+
+  from rdf/serializer/plan import rdf_serializer_plan;
+  
+  let plan := rdf_serializer_plan(quads);
+  for ( let bunch in plan{bunches} ) {
+      say bunch{subject}.to_String();
+  }
+
+
+=head1 DESCRIPTION
+
+This module prepares RDF graph-shaped data for human-oriented serializers.
+It groups triples by subject, identifies blank nodes which can safely be
+nested as property lists, detects RDF collection heads, and sorts subject
+and predicate groups using the same broad priorities as
+C<RDF::TrineX::Serializer::MockTurtleSoup>.
+
+The resulting plan is intentionally serializer-neutral so Turtle and
+RDF/XML serializers can share the same decisions about blank-node nesting,
+list-cell suppression, and subject/predicate ordering.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< rdf_serializer_plan(Array quads, Dict options := {}) >>
+
+Returns a dictionary containing C<bunches> and C<bunch_map>. Each bunch is
+a dictionary with C<subject>, C<triples>, C<inline>, C<list>, C<inlist>,
+and C<isturd> fields. Named graph quads are ignored because Turtle and
+RDF/XML are RDF graph syntaxes rather than dataset syntaxes.
+
+=item C<< rdf_serializer_sort_triples(Array triples, Dict options := {}) >>
+
+Returns triples sorted with C<rdf:type> first, labelling predicates second,
+and remaining predicates by serializer display key then object identity.
+The C<labelling> option is an array of predicate IRIs which should be
+considered label predicates.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/plan >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import RDF_NS, RDFS_NS;
+from rdf/term import
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFIRI,
+	RDFLiteral,
+	rdf_term_key;
+
+function _serializer_plan_bunch ( Dict map, subject ) {
+	let key := rdf_term_key(subject);
+	if ( not map.exists(key) ) {
+		map.set( key, {
+			subject: subject,
+			triples: [],
+			inline: false,
+			list: null,
+			inlist: false,
+			isturd: false,
+			done: false,
+		});
+	}
+	return map.get(key);
+}
+
+function _serializer_plan_is_default_quad ( quad ) {
+	return quad.get_graph() instanceof RDFDefaultGraph;
+}
+
+function _serializer_plan_is_rdf_iri ( term, String local ) {
+	return term instanceof RDFIRI and term.get_value() eq RDF_NS _ local;
+}
+
+function _serializer_plan_is_label ( term, Dict options ) {
+	return false unless term instanceof RDFIRI;
+	let iris := options.get( "labelling", [ RDFS_NS _ "label" ] );
+	for ( let iri in iris ) {
+		return true if term.get_value() eq iri;
+	}
+	return false;
+}
+
+function _serializer_plan_predicate_sort_key ( pred, Dict options ) {
+	return "0" if _serializer_plan_is_rdf_iri( pred, "type" );
+	return "1" if _serializer_plan_is_label( pred, options );
+	return "2|" _ rdf_term_key(pred);
+}
+
+function rdf_serializer_sort_triples ( Array triples, Dict options := {} ) {
+	let copy := [];
+	for ( let triple in triples ) {
+		copy.push(triple);
+	}
+	return copy.sort( function ( left, right ) {
+		let lp := _serializer_plan_predicate_sort_key(
+			left.get_predicate(),
+			options,
+		);
+		let rp := _serializer_plan_predicate_sort_key(
+			right.get_predicate(),
+			options,
+		);
+		return lp cmp rp if lp ne rp;
+		return rdf_term_key(left.get_predicate()) cmp
+			rdf_term_key(right.get_predicate())
+			if rdf_term_key(left.get_predicate()) ne
+			rdf_term_key(right.get_predicate());
+		return rdf_term_key(left.get_object()) cmp
+			rdf_term_key(right.get_object());
+	});
+}
+
+function _serializer_plan_find_objects ( Dict bunch, String pred_iri ) {
+	let out := [];
+	for ( let triple in bunch{triples} ) {
+		out.push(triple.get_object())
+			if triple.get_predicate() instanceof RDFIRI and
+			triple.get_predicate().get_value() eq pred_iri;
+	}
+	return out;
+}
+
+function _serializer_plan_has_other_list_triples ( Dict bunch ) {
+	for ( let triple in bunch{triples} ) {
+		let pred := triple.get_predicate();
+		next if pred instanceof RDFIRI and (
+			pred.get_value() eq RDF_NS _ "first" or
+			pred.get_value() eq RDF_NS _ "rest"
+		);
+		return true;
+	}
+	return false;
+}
+
+function _serializer_plan_valid_list (
+	term,
+	Dict bunch_map
+) {
+	let items := [];
+	let current := term;
+	let seen := {};
+	while ( true ) {
+		return items if current instanceof RDFIRI and
+			current.get_value() eq RDF_NS _ "nil";
+		return null unless current instanceof RDFBlank;
+		let key := rdf_term_key(current);
+		return null if seen.exists(key);
+		seen.set( key, true );
+		return null unless bunch_map.exists(key);
+		let bunch := bunch_map.get(key);
+		let firsts := _serializer_plan_find_objects(
+			bunch,
+			RDF_NS _ "first",
+		);
+		let rests := _serializer_plan_find_objects(
+			bunch,
+			RDF_NS _ "rest",
+		);
+		return null unless firsts.length() == 1 and rests.length() == 1;
+		return null if _serializer_plan_has_other_list_triples(bunch);
+		items.push(firsts[0]);
+		current := rests[0];
+	}
+}
+
+function _serializer_plan_mark_list_cells ( term, Dict bunch_map ) {
+	let current := term;
+	let seen := {};
+	while ( current instanceof RDFBlank ) {
+		let key := rdf_term_key(current);
+		return null if seen.exists(key) or not bunch_map.exists(key);
+		seen.set( key, true );
+		let bunch := bunch_map.get(key);
+		bunch.set( "isturd", true );
+		let rests := _serializer_plan_find_objects(
+			bunch,
+			RDF_NS _ "rest",
+		);
+		return null unless rests.length() == 1;
+		current := rests[0];
+	}
+}
+
+function _serializer_plan_subject_kind_key ( subject ) {
+	return "0" if subject instanceof RDFIRI;
+	return "1" if subject instanceof RDFBlank;
+	return "2";
+}
+
+function _serializer_plan_priority ( Dict bunch, Dict options ) {
+	let priorities := options.get( "priorities", null );
+	return priorities == null ? 0 : priorities(bunch{subject});
+}
+
+function _serializer_plan_sort_bunches ( Array bunches, Dict options ) {
+	return bunches.sort( function ( left, right ) {
+		let li := left{isturd} ? 1 : 0;
+		let ri := right{isturd} ? 1 : 0;
+		return li <=> ri if li != ri;
+		let lp := _serializer_plan_priority( left, options );
+		let rp := _serializer_plan_priority( right, options );
+		return rp <=> lp if lp != rp;
+		let lk := _serializer_plan_subject_kind_key(left{subject});
+		let rk := _serializer_plan_subject_kind_key(right{subject});
+		return lk cmp rk if lk ne rk;
+		let ll := left{inlist} ? 1 : 0;
+		let rl := right{inlist} ? 1 : 0;
+		return ll <=> rl if ll != rl;
+		return rdf_term_key(left{subject}) cmp rdf_term_key(right{subject});
+	});
+}
+
+function rdf_serializer_plan ( Array quads, Dict options := {} ) {
+	let bunch_map := {};
+	let incoming := {};
+	let blank_subjects := {};
+	for ( let quad in quads ) {
+		next unless _serializer_plan_is_default_quad(quad);
+		let subject := quad.get_subject();
+		let bunch := _serializer_plan_bunch( bunch_map, subject );
+		bunch{triples}.push(quad);
+		if ( subject instanceof RDFBlank ) {
+			blank_subjects.set( rdf_term_key(subject), subject );
+			incoming.set( rdf_term_key(subject), incoming.get(
+				rdf_term_key(subject),
+				0,
+			));
+		}
+		if ( quad.get_object() instanceof RDFBlank ) {
+			let key := rdf_term_key(quad.get_object());
+			incoming.set( key, incoming.get( key, 0 ) + 1 );
+			blank_subjects.set( key, quad.get_object() );
+		}
+	}
+	for ( let key in blank_subjects.keys() ) {
+		if ( not bunch_map.exists(key) ) {
+			_serializer_plan_bunch( bunch_map, blank_subjects.get(key) );
+		}
+		let bunch := bunch_map.get(key);
+		bunch.set( "inline", incoming.get( key, 0 ) <= 1 );
+		let items := _serializer_plan_valid_list(
+			bunch{subject},
+			bunch_map,
+		);
+		if ( items != null ) {
+			bunch.set( "list", items );
+			_serializer_plan_mark_list_cells( bunch{subject}, bunch_map );
+			for ( let item in items ) {
+				if ( not item instanceof RDFLiteral and
+					bunch_map.exists(rdf_term_key(item)) ) {
+					bunch_map.get(rdf_term_key(item)).set( "inlist", true );
+				}
+			}
+		}
+	}
+	let bunches := [];
+	for ( let key in bunch_map.keys() ) {
+		let bunch := bunch_map.get(key);
+		bunch.set(
+			"triples",
+			rdf_serializer_sort_triples( bunch{triples}, options ),
+		);
+		bunches.push(bunch);
+	}
+	return {
+		bunches: _serializer_plan_sort_bunches( bunches, options ),
+		bunch_map: bunch_map,
+	};
+}

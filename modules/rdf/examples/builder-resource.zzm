@@ -7,7 +7,6 @@ rdf/examples/builder-resource - using RDFBuilder and RDFResource
 =head1 SYNOPSIS
 
   from rdf import RDFBuilder, RDFResource, RDFStore, rdf_iri, rdf_type;
-  from std/db import DB;
   
   let ex := "http://example.com/";
   let builder := new RDFBuilder();
@@ -16,7 +15,7 @@ rdf/examples/builder-resource - using RDFBuilder and RDFResource
     .triple( "ex:alice", rdf_type(), "ex:Person" )
     .triple( "ex:alice", "ex:name", builder.literal("Alice") );
   
-  let store := new RDFStore(dbh: DB.temp());
+  let store := RDFStore.temp();
   store.install_schema();
   builder.add_to(store);
   

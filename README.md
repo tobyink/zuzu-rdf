@@ -6,12 +6,13 @@ This trial distribution provides:
 
 - RDF term and quad value objects.
 - Parsers for N-Triples, N-Quads, Turtle, and RDF/XML.
-- Serializers for N-Triples and N-Quads.
+- Serializers for N-Triples, N-Quads, Turtle, RDF/XML, and SPARQL result
+  sets.
 - A `std/db`-backed quad store for SQLite, MySQL, and PostgreSQL.
 - SPARQL 1.1 Query parsing and execution over stores.
 - SPARQL 1.1 Update parsing and execution.
 - SPARQL Protocol request handling, HTTP(S) client support, and SPARQL
-  result serializers.
+  result serializers, including Turtle and RDF/XML graph results.
 - RDFS entailment, datatype helpers, prefix registries, builders, and
   resource wrappers.
 
@@ -48,9 +49,8 @@ project expressions, property paths, and subqueries, with exact
 
 ```zzs
 from rdf import RDFStore, TurtleParser, sparql_query;
-from std/db import DB;
 
-let store := new RDFStore(dbh: DB.temp());
+let store := RDFStore.temp();
 store.install_schema();
 store.add_quads(( new TurtleParser() ).parse_string("""
 @prefix ex: <http://example.com/> .

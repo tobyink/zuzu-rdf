@@ -95,6 +95,10 @@ let ua := new FakeUserAgent(responses: [
 		response_body: "<http://example.com/s> <http://example.com/p> \"o\" .\n",
 	),
 	new FakeResponse(
+		response_type: "application/rdf+xml",
+		response_body: "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"http://example.com/\"><rdf:Description rdf:about=\"http://example.com/s\"><ex:p>xml</ex:p></rdf:Description></rdf:RDF>",
+	),
+	new FakeResponse(
 		response_status: 204,
 		response_type: "text/plain",
 		response_body: "",
@@ -152,6 +156,12 @@ is(
 	graph{quads}[0].get_object().to_String(),
 	rdf_literal("o").to_String(),
 	"client parses graph result terms",
+);
+let graph_xml := client.query("CONSTRUCT WHERE { ?s ?p ?o }");
+is(
+	graph_xml{quads}[0].get_object().to_String(),
+	rdf_literal("xml").to_String(),
+	"client parses RDF/XML graph result terms",
 );
 
 let update := client.update("INSERT DATA { <s> <p> \"o\" . }");

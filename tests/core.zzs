@@ -10,9 +10,12 @@ from rdf import
 	NTriplesParser,
 	NTriplesSerializer,
 	RDFStore,
+	RdfXmlSerializer,
+	TurtleSerializer,
 	XSD_NS,
 	RdfXmlParser,
 	TurtleParser,
+	rdf_blank,
 	rdf_iri,
 	rdf_literal,
 	rdf_quad,
@@ -20,8 +23,8 @@ from rdf import
 	rdf_term_kind,
 	sparql_parse,
 	sparql_query;
-from std/db import DB;
 from std/io import Path;
+from std/string import index;
 
 let ex_s := rdf_iri("http://example.com/s");
 let ex_p := rdf_iri("http://example.com/p");
@@ -81,7 +84,7 @@ ex:s2 ex:p "one", "two";
 	ex:q [ ex:n 1; ex:flag true ];
 	ex:list ( "a" "b" ) .
 """);
-let turtle_store := new RDFStore(dbh: DB.temp());
+let turtle_store := RDFStore.temp();
 turtle_store.install_schema();
 turtle_store.add_quads(turtle_more);
 is(
@@ -115,6 +118,197 @@ is(
 	"Turtle expands RDF collections",
 );
 
+let turtle_serializer := new TurtleSerializer(namespaces: {
+	ex: "http://example.com/",
+});
+let nested := rdf_blank("nested");
+let turtle_pretty := turtle_serializer.serialize([
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/name"),
+		rdf_literal("Alice"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri("http://example.com/Thing"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://www.w3.org/2000/01/rdf-schema#label"),
+		rdf_literal("Alice"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/address"),
+		nested,
+	),
+	rdf_quad(
+		nested,
+		rdf_iri("http://example.com/street"),
+		rdf_literal("Main"),
+	),
+	rdf_quad(
+		rdf_iri("http://example.com/boring"),
+		rdf_iri("http://example.com/p"),
+		rdf_literal("later"),
+	),
+]);
+like(
+	turtle_pretty,
+	/@prefix ex: <http:\/\/example\.com\/> \./,
+	"Turtle serializer emits used prefixes",
+);
+like(
+	turtle_pretty,
+	/<http:\/\/example\.com\/s>\n\ta\s+ex:Thing;\n\trdfs:label\s+"Alice";/,
+	"Turtle serializer puts rdf:type and rdfs:label first",
+);
+like(
+	turtle_pretty,
+	/ex:address\s+\[ ex:street "Main" \];/,
+	"Turtle serializer nests single-use blank node objects",
+);
+is(
+	turtle_parser.parse_string(turtle_pretty).length(),
+	6,
+	"Turtle serializer output parses back",
+);
+let turtle_list_text := turtle_serializer.serialize(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:list ( "a" "b" ) .
+"""));
+like(
+	turtle_list_text,
+	/\( "a" "b" \)/,
+	"Turtle serializer uses compact list syntax",
+);
+let turtle_custom_label := ( new TurtleSerializer(
+	namespaces: { ex: "http://example.com/" },
+	labelling: [ "http://example.com/zlabel" ],
+) ).serialize([
+	rdf_quad(
+		ex_s,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri("http://example.com/Thing"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/aaa"),
+		rdf_literal("ordinary"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/zlabel"),
+		rdf_literal("preferred"),
+	),
+]);
+ok(
+	index( turtle_custom_label, "ex:Thing" ) <
+		index( turtle_custom_label, "ex:zlabel" ),
+	"Turtle serializer puts configured label predicates after rdf:type",
+);
+ok(
+	index( turtle_custom_label, "ex:zlabel" ) <
+		index( turtle_custom_label, "ex:aaa" ),
+	"Turtle serializer puts configured label predicates before ordinary predicates",
+);
+
+let rdfxml_serializer := new RdfXmlSerializer(namespaces: {
+	ex: "http://example.com/",
+});
+let rdfxml_pretty := rdfxml_serializer.serialize([
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/name"),
+		rdf_literal("Alice"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri("http://example.com/Thing"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://www.w3.org/2000/01/rdf-schema#label"),
+		rdf_literal("Alice"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/address"),
+		nested,
+	),
+	rdf_quad(
+		nested,
+		rdf_iri("http://example.com/street"),
+		rdf_literal("Main"),
+	),
+	rdf_quad(
+		rdf_iri("http://example.com/boring"),
+		rdf_iri("http://example.com/p"),
+		rdf_literal("later"),
+	),
+]);
+like(
+	rdfxml_pretty,
+	/<ex:Thing rdf:about="http:\/\/example\.com\/s">/,
+	"RDF/XML serializer uses typed node elements",
+);
+like(
+	rdfxml_pretty,
+	/<rdfs:label>Alice<\/rdfs:label>\n\t\t<ex:address>/,
+	"RDF/XML serializer puts labelling predicates before other predicates",
+);
+like(
+	rdfxml_pretty,
+	/<ex:address>\n\t\t\t<rdf:Description>\n\t\t\t\t<ex:street>Main<\/ex:street>/,
+	"RDF/XML serializer nests single-use blank node objects",
+);
+is(
+	( new RdfXmlParser() ).parse_string(rdfxml_pretty).length(),
+	6,
+	"RDF/XML serializer output parses back",
+);
+let rdfxml_custom_label := ( new RdfXmlSerializer(
+	namespaces: { ex: "http://example.com/" },
+	labelling: [ "http://example.com/zlabel" ],
+) ).serialize([
+	rdf_quad(
+		ex_s,
+		rdf_iri(RDF_NS _ "type"),
+		rdf_iri("http://example.com/Thing"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/aaa"),
+		rdf_literal("ordinary"),
+	),
+	rdf_quad(
+		ex_s,
+		rdf_iri("http://example.com/zlabel"),
+		rdf_literal("preferred"),
+	),
+]);
+like(
+	rdfxml_custom_label,
+	/<ex:zlabel>preferred<\/ex:zlabel>\n\t\t<ex:aaa>ordinary<\/ex:aaa>/,
+	"RDF/XML serializer accepts multiple configured label predicates",
+);
+let rdfxml_list_text := rdfxml_serializer.serialize(turtle_parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:list ( ex:a ex:b ) .
+"""));
+like(
+	rdfxml_list_text,
+	/rdf:parseType="Collection"/,
+	"RDF/XML serializer uses collection parseType for resource lists",
+);
+is(
+	( new RdfXmlParser() ).parse_string(rdfxml_list_text).length(),
+	5,
+	"RDF/XML serializer collection output parses back",
+);
+
 let rdfxml_parser := new RdfXmlParser();
 let rdfxml := rdfxml_parser.parse_string("""
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
@@ -127,7 +321,7 @@ let rdfxml := rdfxml_parser.parse_string("""
 is( rdfxml[0].get_predicate().get_value(), "http://example.com/p", "RDF/XML parses property element" );
 is( rdfxml[0].get_object().get_value(), "from xml", "RDF/XML parses literal text" );
 
-let rdfxml_more_store := new RDFStore(dbh: DB.temp());
+let rdfxml_more_store := RDFStore.temp();
 rdfxml_more_store.install_schema();
 let rdfxml_more := rdfxml_parser.parse_string(
 	"""
@@ -294,7 +488,7 @@ like(
 	"RDF/XML rejects conflicting subject attributes",
 );
 
-let store := new RDFStore(dbh: DB.temp());
+let store := RDFStore.temp();
 store.install_schema();
 store.add_quad(quad);
 store.add_quads(turtle);
@@ -309,7 +503,7 @@ like(
 	"store rejects unsupported backend labels",
 );
 
-let file_store := new RDFStore(dbh: DB.temp());
+let file_store := RDFStore.temp();
 file_store.install_schema();
 let turtle_file := Path.tempfile();
 turtle_file.spew_utf8("""
@@ -398,7 +592,7 @@ LIMIT 1
 ok( "o" in select_all_result{variables}, "SPARQL SELECT * projects bound variables" );
 ok( select_all_result{results}[0]{o} != null, "SPARQL SELECT * returns projected binding" );
 
-let sparql_semicolon_store := new RDFStore(dbh: DB.temp());
+let sparql_semicolon_store := RDFStore.temp();
 sparql_semicolon_store.install_schema();
 sparql_semicolon_store.add_quads(turtle_parser.parse_string("""
 @prefix ex: <http://example.com/> .
@@ -486,7 +680,7 @@ is(
 	"SPARQL GRAPH variable binds graph name",
 );
 
-let named_dataset_store := new RDFStore(dbh: DB.temp());
+let named_dataset_store := RDFStore.temp();
 named_dataset_store.install_schema();
 named_dataset_store.add_quad(rdf_quad(
 	rdf_iri("http://example.com/s"),
@@ -611,7 +805,7 @@ ok(
 	"SPARQL SERVICE without SILENT rejects unbound endpoint",
 );
 
-let minus_store := new RDFStore(dbh: DB.temp());
+let minus_store := RDFStore.temp();
 minus_store.install_schema();
 minus_store.add_quads(turtle_parser.parse_string("""
 @prefix ex: <http://example.com/> .
@@ -669,7 +863,7 @@ is(
 	"SPARQL FILTER NOT EXISTS keeps expected subject",
 );
 
-let path_store := new RDFStore(dbh: DB.temp());
+let path_store := RDFStore.temp();
 path_store.install_schema();
 path_store.add_quads(turtle_parser.parse_string("""
 @prefix ex: <http://example.com/> .
@@ -769,7 +963,7 @@ is(
 	"SPARQL negated property set excludes listed predicates",
 );
 
-let aggregate_store := new RDFStore(dbh: DB.temp());
+let aggregate_store := RDFStore.temp();
 aggregate_store.install_schema();
 aggregate_store.add_quads(turtle_parser.parse_string("""
 @prefix ex: <http://example.com/> .
@@ -824,7 +1018,7 @@ SELECT (SAMPLE(?label) AS ?sample) WHERE { ?s ex:label ?label . }
 );
 is( sample_result{results}[0]{sample}.get_value(), "bee", "SPARQL aggregate SAMPLE returns a value" );
 
-let expression_store := new RDFStore(dbh: DB.temp());
+let expression_store := RDFStore.temp();
 expression_store.install_schema();
 expression_store.add_quads(turtle_parser.parse_string("""
 @prefix ex: <http://example.com/> .
