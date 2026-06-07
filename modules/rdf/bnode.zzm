@@ -1,0 +1,84 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/bnode - Blank node scope utilities.
+
+=head1 SYNOPSIS
+
+  from rdf/bnode import rdf_blank_scope;
+
+  let scope := rdf_blank_scope("row");
+  let a := scope.fresh();
+  let b := scope.fresh();
+
+
+=head1 DESCRIPTION
+
+Blank node scopes generate deterministic labels with an isolated counter.
+They are useful for parsers, builders, and tests that need fresh blank
+nodes without sharing global state.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFBlankNodeScope>
+
+=over
+
+=item C<< fresh() >>
+
+Returns a new C<RDFBlank> using the scope prefix and increments the
+counter.
+
+=item C<< reset() >>
+
+Resets the counter to zero and returns the scope.
+
+=back
+
+=back
+
+=head2 Functions
+
+=over
+
+=item C<< rdf_blank_scope(String prefix := "b") >>
+
+Returns a new C<RDFBlankNodeScope>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/bnode >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/term import rdf_blank;
+
+class RDFBlankNodeScope {
+	let String prefix := "b";
+	let Number counter := 0;
+
+	method fresh () {
+		counter++;
+		return rdf_blank(prefix _ counter);
+	}
+
+	method reset () {
+		counter := 0;
+		return self;
+	}
+}
+
+function rdf_blank_scope ( String prefix := "b" ) {
+	return new RDFBlankNodeScope(prefix: prefix);
+}

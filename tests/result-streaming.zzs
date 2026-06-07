@@ -1,0 +1,115 @@
+from test/more import *;
+
+requires_capability( "db" );
+
+from rdf import
+	NQuadsParser,
+	NQuadsSerializer,
+	NTriplesParser,
+	NTriplesSerializer,
+	RDFStore,
+	TurtleParser,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	sparql_query,
+	sparql_results_csv,
+	sparql_results_json,
+	sparql_results_tsv,
+	sparql_results_xml;
+from std/db import DB;
+
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+store.add_quads(( new TurtleParser() ).parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "Alice"@en ;
+	ex:q <http://example.com/o> .
+"""));
+
+let result := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:s ex:p ?o . }
+""",
+);
+
+like( sparql_results_xml(result), /<variable name="o"\/>/, "SPARQL XML results include variable" );
+like( sparql_results_xml(result), /<literal xml:lang="en">Alice<\/literal>/, "SPARQL XML results include literal binding" );
+like( sparql_results_json(result), /"xml:lang":"en"/, "SPARQL JSON results include language tag" );
+like( sparql_results_csv(result), /^o\nAlice\n$/, "SPARQL CSV results include header and lexical value" );
+is( sparql_results_tsv(result), "?o\n\"Alice\"@en\n", "SPARQL TSV results include N-Triples term" );
+
+let ask := sparql_query(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+ASK WHERE { ex:s ex:q <http://example.com/o> . }
+""",
+);
+like( sparql_results_xml(ask), /<boolean>true<\/boolean>/, "SPARQL XML ASK serializes boolean" );
+like( sparql_results_json(ask), /"boolean":true/, "SPARQL JSON ASK serializes boolean" );
+like( sparql_results_csv(ask), /^boolean\ntrue\n$/, "SPARQL CSV ASK serializes boolean" );
+is( sparql_results_tsv(ask), "?boolean\ntrue\n", "SPARQL TSV ASK serializes boolean" );
+
+let nt_lines := [
+	"<http://example.com/s> <http://example.com/p> \"one\" .\n",
+	"<http://example.com/s> <http://example.com/p> \"two\" .\n",
+];
+is(
+	( new NTriplesParser() ).parse_lines(nt_lines).length(),
+	2,
+	"N-Triples parse_lines parses concatenated lines",
+);
+is(
+	( new NTriplesParser() ).parse_chunks(nt_lines).length(),
+	2,
+	"N-Triples parse_chunks parses concatenated chunks",
+);
+
+let nq_lines := [
+	"<http://example.com/s> <http://example.com/p> \"one\" <http://example.com/g> .\n",
+];
+is(
+	( new NQuadsParser() ).parse_lines(nq_lines)[0].get_graph().get_value(),
+	"http://example.com/g",
+	"N-Quads parse_lines parses graph label",
+);
+
+let turtle_lines := [
+	"@prefix ex: <http://example.com/> .\n",
+	"ex:s ex:p \"from turtle\" .\n",
+];
+is(
+	( new TurtleParser() ).parse_lines(turtle_lines)[0].get_object().get_value(),
+	"from turtle",
+	"Turtle parse_lines parses concatenated lines",
+);
+
+let emitted := "";
+( new NTriplesSerializer() ).serialize_each(
+	[ rdf_quad( rdf_iri("http://example.com/s"), rdf_iri("http://example.com/p"), rdf_literal("x") ) ],
+	function ( String chunk ) {
+		emitted _= chunk;
+	},
+);
+like( emitted, /"x" \.\n$/, "N-Triples serialize_each emits line chunks" );
+
+let emitted_nq := "";
+( new NQuadsSerializer() ).serialize_each(
+	[
+		rdf_quad(
+			rdf_iri("http://example.com/s"),
+			rdf_iri("http://example.com/p"),
+			rdf_literal("x"),
+			rdf_iri("http://example.com/g"),
+		),
+	],
+	function ( String chunk ) {
+		emitted_nq _= chunk;
+	},
+);
+like( emitted_nq, /<http:\/\/example\.com\/g> \.\n$/, "N-Quads serialize_each emits line chunks" );
+
+done_testing();

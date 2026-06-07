@@ -9,7 +9,11 @@ This trial distribution provides:
 - Serializers for N-Triples and N-Quads.
 - A `std/db`-backed quad store for SQLite, MySQL, and PostgreSQL.
 - SPARQL 1.1 Query parsing and execution over stores.
-- SPARQL 1.1 Update syntax parsing.
+- SPARQL 1.1 Update parsing and execution.
+- SPARQL Protocol request handling, HTTP(S) client support, and SPARQL
+  result serializers.
+- RDFS entailment, datatype helpers, prefix registries, builders, and
+  resource wrappers.
 
 The first implementation is pure ZuzuScript and has no dependencies beyond
 the Zuzu interpreter and stdlib. The SPARQL parser accepts SPARQL 1.1
@@ -17,13 +21,18 @@ Query and Update syntax. Query execution covers `SELECT`, `ASK`,
 `CONSTRUCT`, `DESCRIBE`, graph patterns, joins, `OPTIONAL`, `UNION`,
 `MINUS`, `FILTER` and `EXISTS`, `VALUES`, `BIND`, grouping, aggregates,
 projection expressions, property paths, dataset clauses, solution
-modifiers, built-in functions, and `SERVICE` queries. Update execution is
-intentionally left for a later stage, and the module boundaries are kept
-open so it can be added without replacing the parser.
+modifiers, built-in functions, and `SERVICE` queries. SPARQL Update
+execution covers data updates, modify operations, graph management
+operations, local and HTTP `LOAD`, prepared updates, and protocol update
+requests.
 
-RDF/XML support includes the W3C RDF 1.1 RDF/XML positive and negative
-syntax test suite as author tests. The implementation covers typed node
-elements, `xml:base`, `xml:lang`, `rdf:ID`, `rdf:nodeID`, property
+Remote SPARQL Protocol endpoints can be queried with
+`SPARQLProtocolClient`; results are parsed into the same dictionary shapes
+returned by local `sparql_query` and `sparql_update` calls.
+
+RDF syntax support includes author tests for the official W3C RDF 1.1
+RDF/XML, Turtle, N-Triples, and N-Quads manifests. RDF/XML covers typed
+node elements, `xml:base`, `xml:lang`, `rdf:ID`, `rdf:nodeID`, property
 attributes, `parseType` resource, collection, and XML literal forms, RDF
 lists, `rdf:li`, and RDF/XML reification.
 
@@ -62,6 +71,15 @@ INSERT DATA { <http://example.com/s> <http://example.com/p> "value" . }
 """);
 ```
 
+Use `sparql_update` to execute Update operations transactionally:
+
+```zzs
+sparql_update(store, """
+PREFIX ex: <http://example.com/>
+INSERT DATA { ex:s ex:p "value" . }
+""");
+```
+
 Parsers are classes. Use `parse_string` to return quads, or `parse_file`
 with `into: store` to load directly into a store:
 
@@ -69,6 +87,29 @@ with `into: store` to load directly into a store:
 let parser := new RdfXmlParser();
 parser.parse_file( somepath, into: store );
 ```
+
+Higher-level helpers are available for common application code:
+
+```zzs
+from rdf import RDFBuilder, RDFResource, rdf_iri, rdf_type;
+
+let builder := new RDFBuilder();
+builder
+	.prefix( "ex", "http://example.com/" )
+	.triple( "ex:alice", rdf_type(), "ex:Person" )
+	.triple( "ex:alice", "ex:name", builder.literal("Alice") );
+
+builder.add_to(store);
+
+let alice := new RDFResource(
+	store: store,
+	term: rdf_iri("http://example.com/alice"),
+);
+say alice.value(rdf_iri("http://example.com/name")).get_value();
+```
+
+See `COMPLIANCE.md` for the current parser, serializer, SPARQL, store,
+and framework compliance matrix.
 
 ## Notes
 

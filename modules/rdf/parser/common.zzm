@@ -4,6 +4,139 @@
 
 rdf/parser/common - Shared RDF parser helpers.
 
+=head1 SYNOPSIS
+
+  from rdf/parser/common import RDFReader;
+
+  let reader := new RDFReader(source: "<http://example.com/s>");
+  let term := reader.read_iri();
+
+
+=head1 DESCRIPTION
+
+This module contains the shared reader used by the N-Triples, N-Quads,
+Turtle, and RDF/XML parsers. It is primarily useful for parser
+implementors. Public parser classes should normally be preferred by
+application code.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFReader>
+
+A cursor over a source string with namespace, base IRI, blank node, term,
+literal, and N-Triples/N-Quads statement readers.
+
+=over
+
+=item C<< advance(Number count) >>
+
+Moves the cursor and returns the reader.
+
+=item C<< position() >>
+
+Returns the current cursor offset.
+
+=item C<< fresh_blank() >>
+
+Returns a generated blank node term.
+
+=item C<< set_base(String value) >>
+
+Sets the base IRI used by C<resolve_iri> and returns the reader.
+
+=item C<< read_iri() >>
+
+Reads an IRI reference and resolves it against the reader base.
+
+=item C<< read_absolute_iri() >>
+
+Reads an IRI and throws unless it is absolute.
+
+=item C<< resolve_iri(String iri) >>
+
+Returns C<iri> resolved against the reader base.
+
+=item C<< read_name() >>
+
+Reads an ASCII name token used by the shared parsers.
+
+=item C<< read_blank_label() >>
+
+Reads a blank node label after C<_:>.
+
+=item C<< read_prefixed_name() >>
+
+Reads a Turtle/SPARQL prefixed name using the reader prefix map.
+
+=item C<< read_prefixed_or_keyword() >>
+
+Reads a prefixed name or the C<a> keyword as C<rdf:type>.
+
+=item C<< read_blank() >>
+
+Reads a blank node term.
+
+=item C<< read_string_literal(Boolean long_allowed, Boolean single_allowed, String escape_mode) >>
+
+Reads a string literal. The flags control triple-quoted and single-quoted
+forms. C<escape_mode> selects the grammar-specific escape rules.
+
+=item C<< read_langtag() >>
+
+Reads a language tag.
+
+=item C<< read_literal() >>
+
+Reads a Turtle literal.
+
+=item C<< read_nt_literal() >>
+
+Reads an N-Triples/N-Quads literal.
+
+=item C<< read_number_token() >>
+
+Reads a numeric token and returns its lexical form and datatype.
+
+=item C<< read_number_or_boolean() >>
+
+Reads a Turtle numeric or boolean literal.
+
+=item C<< read_term() >>, C<< read_subject() >>, C<< read_object() >>
+
+Read Turtle-style terms in the named positions.
+
+=item C<< read_nt_subject() >>, C<< read_nt_predicate() >>, C<< read_nt_object() >>, C<< read_nt_graph() >>
+
+Read N-Triples/N-Quads terms in the named positions.
+
+=item C<< read_nt_statement(Boolean graph_allowed) >>
+
+Reads one N-Triples or N-Quads statement.
+
+=item C<< read_nt_all(Boolean graph_allowed) >>
+
+Reads all N-Triples or N-Quads statements from the source.
+
+=item C<< read_statement(Boolean graph_allowed) >>, C<< read_all(Boolean graph_allowed) >>
+
+Compatibility aliases for statement and source readers.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/parser/common >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import
@@ -16,7 +149,8 @@ from rdf/term import
 	rdf_literal,
 	rdf_quad,
 	rdf_term_key;
-from std/string import ends_with, index, split, sprint, substr;
+from std/string import contains, ends_with, index, join, rindex, split,
+	sprint, substr;
 
 function _parser_options ( PairList options ) {
 	let out := { into: null, base: "" };
@@ -48,14 +182,183 @@ function _hex_value ( String ch ) {
 	return 10 + index( "abcdef", lc(ch) );
 }
 
-function _unicode_char ( String hex ) {
+function _valid_codepoint ( Number n ) {
+	return false if n < 0;
+	return false if n > 1114111;
+	return false if n >= 55296 and n <= 57343;
+	return true;
+}
+
+function _hex_number ( String hex ) {
 	let n := 0;
 	let i := 0;
 	while ( i < length hex ) {
 		n := n * 16 + _hex_value(substr(hex, i, 1));
 		i++;
 	}
+	return n;
+}
+
+function _unicode_char ( String hex ) {
+	let n := _hex_number(hex);
+	die "Invalid Unicode codepoint" unless _valid_codepoint(n);
 	return sprint( "%c", n );
+}
+
+function _rdf_remove_dot_segments ( String path ) {
+	let absolute := substr( path, 0, 1 ) eq "/";
+	let trailing := ends_with( path, "/" ) or ends_with( path, "/." ) or
+		ends_with( path, "/.." ) or path eq "." or path eq "..";
+	let parts := [];
+	let i := 0;
+	for ( let segment in split( path, "/" ) ) {
+		if ( segment eq "" ) {
+			parts.push(segment) if i > 0 or absolute;
+			i++;
+			next;
+		}
+		if ( segment eq "." ) {
+			i++;
+			next;
+		}
+		if ( segment eq ".." ) {
+			let min_parts := absolute ? 1 : 0;
+			if ( parts.length() > min_parts ) {
+				parts.pop();
+			}
+		}
+		else {
+			parts.push(segment);
+		}
+		i++;
+	}
+	let out := join( "/", parts );
+	if ( trailing and not ends_with( out, "/" ) ) {
+		out _= "/";
+	}
+	return out eq "" and absolute ? "/" : out;
+}
+
+function _rdf_parse_iri_parts ( String iri ) {
+	let m := iri ~ /^(([A-Za-z][A-Za-z0-9+.-]*):)?(\/\/([^\/?#]*))?([^?#]*)(\?([^#]*))?(#([\s\S]*))?$/;
+	return {
+		scheme: m[2],
+		has_authority: m[3] ne "",
+		authority: m[4],
+		path: m[5],
+		has_query: m[6] ne "",
+		query: m[7],
+		has_fragment: m[8] ne "",
+		fragment: m[9],
+	};
+}
+
+function _rdf_build_iri_parts ( parts ) {
+	let out := "";
+	out _= parts{scheme} _ ":" if parts{scheme} ne "";
+	out _= "//" _ parts{authority} if parts{has_authority};
+	out _= parts{path};
+	out _= "?" _ parts{query} if parts{has_query};
+	out _= "#" _ parts{fragment} if parts{has_fragment};
+	return out;
+}
+
+function _rdf_merge_iri_path ( base, String ref_path ) {
+	if ( base{has_authority} and base{path} eq "" ) {
+		return "/" _ ref_path;
+	}
+	let slash := rindex( base{path}, "/" );
+	return ref_path if slash < 0;
+	return substr( base{path}, 0, slash + 1 ) _ ref_path;
+}
+
+function _rdf_resolve_iri ( String base, String ref ) {
+	return ref if base eq "";
+	let r := _rdf_parse_iri_parts(ref);
+	return _rdf_build_iri_parts({
+		scheme: r{scheme},
+		has_authority: r{has_authority},
+		authority: r{authority},
+		path: _rdf_remove_dot_segments(r{path}),
+		has_query: r{has_query},
+		query: r{query},
+		has_fragment: r{has_fragment},
+		fragment: r{fragment},
+	}) if r{scheme} ne "";
+	let b := _rdf_parse_iri_parts(base);
+	let target := {
+		scheme: b{scheme},
+		has_authority: false,
+		authority: "",
+		path: "",
+		has_query: false,
+		query: "",
+		has_fragment: r{has_fragment},
+		fragment: r{fragment},
+	};
+	if ( r{has_authority} ) {
+		target{has_authority} := true;
+		target{authority} := r{authority};
+		target{path} := _rdf_remove_dot_segments(r{path});
+		target{has_query} := r{has_query};
+		target{query} := r{query};
+		return _rdf_build_iri_parts(target);
+	}
+	target{has_authority} := b{has_authority};
+	target{authority} := b{authority};
+	if ( r{path} eq "" ) {
+		target{path} := b{path};
+		target{has_query} := r{has_query} ? true : b{has_query};
+		target{query} := r{has_query} ? r{query} : b{query};
+	}
+	else {
+		target{path} := substr( r{path}, 0, 1 ) eq "/"
+			? _rdf_remove_dot_segments(r{path})
+			: _rdf_remove_dot_segments(_rdf_merge_iri_path( b, r{path} ));
+		target{has_query} := r{has_query};
+		target{query} := r{query};
+	}
+	return _rdf_build_iri_parts(target);
+}
+
+function _is_ws ( value ) {
+	return value != null and value ~ /\s/;
+}
+
+function _is_hex ( value ) {
+	return value != null and value ~ /^[0-9A-Fa-f]$/;
+}
+
+function _is_name_base ( value ) {
+	return false if value == null;
+	return true if value ~ /^[A-Za-z]$/;
+	return true if value ~ /^[^\x00-\x7F]$/;
+	return false;
+}
+
+function _is_name_start ( value ) {
+	return _is_name_base(value) or value eq "_";
+}
+
+function _is_name_continue ( value ) {
+	return false if value == null;
+	return true if _is_name_start(value);
+	return true if value ~ /^[0-9-]$/;
+	return false;
+}
+
+function _is_blank_continue ( value ) {
+	return _is_name_continue(value) or value eq ".";
+}
+
+function _is_pn_local_extra ( value ) {
+	return false;
+}
+
+function _is_token_delimiter ( value ) {
+	return true if value == null;
+	return true if _is_ws(value);
+	return contains( "[]();,", value );
 }
 
 class RDFReader {
@@ -98,6 +401,10 @@ class RDFReader {
 
 	method _starts ( String text ) {
 		return substr( source, pos, length text ) eq text;
+	}
+
+	method _starts_ci ( String text ) {
+		return uc(substr( source, pos, length text )) eq uc(text);
 	}
 
 	method _error ( String message ) {
@@ -168,17 +475,64 @@ class RDFReader {
 		self._error("Unterminated quoted value");
 	}
 
+	method _read_unicode_escape ( Number count ) {
+		let hex := substr(source, pos, count);
+		self._error("Invalid Unicode escape")
+			unless hex ~ /^[0-9A-Fa-f]+$/ and length hex == count;
+		self._error("Invalid Unicode codepoint")
+			unless _valid_codepoint(_hex_number(hex));
+		pos += count;
+		return _unicode_char(hex);
+	}
+
+	method _read_iri_body () {
+		let iri := "";
+		while ( self._peek() != null ) {
+			let ch := self._next();
+			return iri if ch eq ">";
+			if ( ch eq "\\" ) {
+				let esc := self._next();
+				if ( esc eq "u" ) {
+					let decoded := self._read_unicode_escape(4);
+					self._error("Invalid character in IRI")
+						if decoded ~ /[\x00-\x20<>"{}|^`]/;
+					iri _= decoded;
+				}
+				else if ( esc eq "U" ) {
+					let decoded := self._read_unicode_escape(8);
+					self._error("Invalid character in IRI")
+						if decoded ~ /[\x00-\x20<>"{}|^`]/;
+					iri _= decoded;
+				}
+				else {
+					self._error("Invalid IRI escape \\" _ esc);
+				}
+				next;
+			}
+			self._error("Invalid character in IRI")
+				if ch ~ /[\x00-\x20<>"{}|^`]/;
+			iri _= ch;
+		}
+		self._error("Unterminated IRI");
+	}
+
 	method read_iri () {
 		self._skip_ws();
 		self._error("Expected IRI") unless self._peek() eq "<";
 		self._next();
-		let iri := self._read_until(">");
+		let iri := self._read_iri_body();
 		return rdf_iri(self.resolve_iri(iri));
 	}
 
+	method read_absolute_iri () {
+		let term := self.read_iri();
+		self._error("Expected absolute IRI")
+			unless term.get_value() ~ /^[A-Za-z][A-Za-z0-9+.-]*:/;
+		return term;
+	}
+
 	method resolve_iri ( String iri ) {
-		return iri if iri ~ /^[A-Za-z][A-Za-z0-9+.-]*:/;
-		return base _ iri;
+		return _rdf_resolve_iri( base, iri );
 	}
 
 	method read_name () {
@@ -197,33 +551,205 @@ class RDFReader {
 		return out;
 	}
 
+	method read_blank_label () {
+		self._skip_ws();
+		self._expect("_:");
+		let out := "";
+		let first := self._peek();
+		self._error("Expected blank node label")
+			unless _is_name_start(first) or first ~ /^[0-9]$/;
+		out _= self._next();
+		while ( _is_blank_continue(self._peek()) ) {
+			let ch := self._next();
+			if ( ch eq "." and not _is_blank_continue(self._peek()) ) {
+				pos--;
+				last;
+			}
+			out _= ch;
+		}
+		return out;
+	}
+
+	method _read_pn_escape () {
+		let esc := self._next();
+		self._error("Unterminated prefixed-name escape") if esc == null;
+		self._error("Invalid prefixed-name escape \\" _ esc)
+			unless contains( "_~.-!$&'()*+,;=/?#@%", esc );
+		return esc;
+	}
+
+	method _read_percent_escape () {
+		self._expect("%");
+		let a := self._next();
+		let b := self._next();
+		self._error("Invalid percent escape") unless _is_hex(a) and _is_hex(b);
+		return "%" _ a _ b;
+	}
+
+	method _read_prefix_part () {
+		let out := "";
+		return out unless _is_name_base(self._peek());
+		out _= self._next();
+		while ( true ) {
+			let ch := self._peek();
+			if ( ch eq "." ) {
+				let after := substr( source, pos + 1, 1 );
+				last unless _is_name_continue(after);
+				out _= self._next();
+				next;
+			}
+			last unless _is_name_continue(ch);
+			out _= self._next();
+		}
+		return out;
+	}
+
+	method _read_local_part () {
+		let out := "";
+		let saw := false;
+		while ( true ) {
+			let ch := self._peek();
+			self._error("Expected prefixed name")
+				if not saw and ( ch eq "-" or ch eq "." );
+			if ( ch eq "\\" ) {
+				self._next();
+				out _= self._read_pn_escape();
+				saw := true;
+				next;
+			}
+			if ( ch eq "%" ) {
+				out _= self._read_percent_escape();
+				saw := true;
+				next;
+			}
+			if ( ch eq "." ) {
+				let after := substr( source, pos + 1, 1 );
+				last unless _is_name_continue(after) or after eq ":" or
+					_is_pn_local_extra(after) or after eq "%" or after eq "\\" or
+					after eq ".";
+				out _= self._next();
+				saw := true;
+				next;
+			}
+			if ( ch eq ":" or _is_name_continue(ch) or
+				_is_pn_local_extra(ch) ) {
+				out _= self._next();
+				saw := true;
+				next;
+			}
+			last;
+		}
+		return out;
+	}
+
+	method read_prefixed_name () {
+		self._skip_ws();
+		let prefix := self._read_prefix_part();
+		self._error("Expected prefixed name") unless self._peek() eq ":";
+		self._next();
+		let local := self._read_local_part();
+		self._error("Unknown prefix " _ prefix) unless prefixes.exists(prefix);
+		return rdf_iri(prefixes.get(prefix) _ local);
+	}
+
 	method read_prefixed_or_keyword () {
-		let name := self.read_name();
-		return rdf_iri(RDF_NS _ "type") if name eq "a";
-		let parts := split( name, ":", 2 );
-		self._error("Unknown prefix " _ parts[0])
-			if parts.length() == 2 and not prefixes.exists(parts[0]);
-		return rdf_iri(prefixes.get(parts[0]) _ parts[1]) if parts.length() == 2;
-		self._error("Expected prefixed name or keyword");
+		self._skip_ws();
+		if ( self._peek() eq "a" and
+			_is_token_delimiter(substr( source, pos + 1, 1 )) ) {
+			pos++;
+			return rdf_iri(RDF_NS _ "type");
+		}
+		return self.read_prefixed_name();
 	}
 
 	method read_blank () {
+		return rdf_blank(self.read_blank_label());
+	}
+
+	method read_string_literal ( Boolean long_allowed,
+		Boolean single_allowed, String escape_mode ) {
 		self._skip_ws();
-		self._expect("_:");
-		return rdf_blank(self.read_name());
+		let quote := self._peek();
+		self._error("Expected literal")
+			unless quote eq "\"" or ( single_allowed and quote eq "'" );
+		let close := quote;
+		let long := false;
+		if ( long_allowed and
+			substr( source, pos, 3 ) eq quote _ quote _ quote ) {
+			long := true;
+			close := quote _ quote _ quote;
+			pos += 3;
+		}
+		else {
+			self._next();
+		}
+		let out := "";
+		while ( self._peek() != null ) {
+			if ( long and self._starts(close) ) {
+				pos += 3;
+				return out;
+			}
+			let ch := self._next();
+			return out if not long and ch eq quote;
+			self._error("Line break in short string")
+				if not long and ( ch eq "\n" or ch eq "\r" );
+			if ( ch eq "\\" ) {
+				let esc := self._next();
+				self._error("Unterminated escape") if esc == null;
+				out _= _unicode_char("0008") if esc eq "b";
+				out _= _unicode_char("000C") if esc eq "f";
+				out _= "\t" if esc eq "t";
+				out _= "\n" if esc eq "n";
+				out _= "\r" if esc eq "r";
+				out _= "\"" if esc eq "\"";
+				out _= "'" if esc eq "'";
+				out _= "\\" if esc eq "\\";
+				if ( esc eq "u" ) {
+					out _= self._read_unicode_escape(4);
+				}
+				else if ( esc eq "U" ) {
+					out _= self._read_unicode_escape(8);
+				}
+				else if ( not( esc eq "b" or esc eq "f" or
+					esc eq "t" or esc eq "n" or esc eq "r" or
+					esc eq "\"" or esc eq "\\" or
+					( escape_mode eq "turtle" and esc eq "'" ) ) ) {
+					self._error("Invalid escape \\" _ esc);
+				}
+				next;
+			}
+			out _= ch;
+		}
+		self._error("Unterminated quoted value");
+	}
+
+	method read_langtag () {
+		self._skip_ws();
+		self._expect("@");
+		let out := "";
+		self._error("Expected language tag") unless self._peek() ~ /^[A-Za-z]$/;
+		while ( self._peek() != null and self._peek() ~ /^[A-Za-z]$/ ) {
+			out _= self._next();
+		}
+		while ( self._peek() eq "-" ) {
+			out _= self._next();
+			self._error("Expected language tag subtag")
+				unless self._peek() ~ /^[A-Za-z0-9]$/;
+			while ( self._peek() != null and
+				self._peek() ~ /^[A-Za-z0-9]$/ ) {
+				out _= self._next();
+			}
+		}
+		return out;
 	}
 
 	method read_literal () {
-		self._skip_ws();
-		self._error("Expected literal") unless self._peek() eq "\"";
-		self._next();
-		let value := self._read_until("\"");
+		let value := self.read_string_literal( true, true, "turtle" );
 		self._skip_ws();
 		let lang := "";
 		let datatype := rdf_iri(XSD_NS _ "string");
 		if ( self._peek() eq "@" ) {
-			self._next();
-			lang := self.read_name();
+			lang := self.read_langtag();
 			datatype := rdf_iri(RDF_NS _ "langString");
 		}
 		else if ( self._starts("^^") ) {
@@ -233,9 +759,55 @@ class RDFReader {
 		return rdf_literal( value, lang, datatype );
 	}
 
+	method read_nt_literal () {
+		let value := self.read_string_literal( false, false, "ntriples" );
+		self._skip_ws();
+		let lang := "";
+		let datatype := rdf_iri(XSD_NS _ "string");
+		if ( self._peek() eq "@" ) {
+			lang := self.read_langtag();
+			datatype := rdf_iri(RDF_NS _ "langString");
+		}
+		else if ( self._starts("^^") ) {
+			pos += 2;
+			datatype := self.read_absolute_iri();
+		}
+		return rdf_literal( value, lang, datatype );
+	}
+
+	method read_number_token () {
+		self._skip_ws();
+		let start := pos;
+		let ch := self._peek();
+		if ( ch eq "+" or ch eq "-" ) {
+			self._next();
+		}
+		while ( self._peek() != null and
+			contains( "0123456789.eE+-", self._peek() ) ) {
+			self._next();
+		}
+		let token := substr( source, start, pos - start );
+		if ( ends_with( token, "." ) and not( token ~ /[eE]\.$/ ) ) {
+			token := substr( token, 0, length token - 1 );
+			pos--;
+		}
+		return token;
+	}
+
 	method read_number_or_boolean () {
 		self._skip_ws();
-		let token := self.read_name();
+		let ch := self._peek();
+		if ( ch eq "t" and substr( source, pos, 4 ) eq "true" and
+			_is_token_delimiter(substr( source, pos + 4, 1 )) ) {
+			pos += 4;
+			return rdf_literal( "true", "", rdf_iri(XSD_NS _ "boolean") );
+		}
+		if ( ch eq "f" and substr( source, pos, 5 ) eq "false" and
+			_is_token_delimiter(substr( source, pos + 5, 1 )) ) {
+			pos += 5;
+			return rdf_literal( "false", "", rdf_iri(XSD_NS _ "boolean") );
+		}
+		let token := self.read_number_token();
 		return rdf_literal( "true", "", rdf_iri(XSD_NS _ "boolean") )
 			if token eq "true";
 		return rdf_literal( "false", "", rdf_iri(XSD_NS _ "boolean") )
@@ -247,7 +819,8 @@ class RDFReader {
 			return rdf_literal( token, "", rdf_iri(XSD_NS _ "decimal") );
 		}
 		if ( token ~ /^[+-]?[0-9]+[eE][+-]?[0-9]+$/ or
-			token ~ /^[+-]?[0-9]*\.[0-9]+[eE][+-]?[0-9]+$/ ) {
+			token ~ /^[+-]?[0-9]*\.[0-9]+[eE][+-]?[0-9]+$/ or
+			token ~ /^[+-]?[0-9]+\.[0-9]*[eE][+-]?[0-9]+$/ ) {
 			return rdf_literal( token, "", rdf_iri(XSD_NS _ "double") );
 		}
 		self._error("Expected numeric or boolean literal");
@@ -258,25 +831,78 @@ class RDFReader {
 		let ch := self._peek();
 		return self.read_iri() if ch eq "<";
 		return self.read_blank() if self._starts("_:");
-		return self.read_literal() if ch eq "\"";
-		if ( ch eq "+" or ch eq "-" or ch ~ /[0-9]/ ) {
+		return self.read_literal() if ch eq "\"" or ch eq "'";
+		if ( ch eq "+" or ch eq "-" or ch eq "." or ch ~ /[0-9]/ ) {
 			return self.read_number_or_boolean();
 		}
 		if ( self._starts("true") or self._starts("false") ) {
 			return self.read_number_or_boolean();
 		}
-		return self.read_prefixed_or_keyword();
+		return self.read_prefixed_name();
 	}
 
 	method read_subject () {
 		self._skip_ws();
 		return self.read_iri() if self._peek() eq "<";
 		return self.read_blank() if self._starts("_:");
-		return self.read_prefixed_or_keyword();
+		return self.read_prefixed_name();
 	}
 
 	method read_object () {
 		return self.read_term();
+	}
+
+	method read_nt_subject () {
+		self._skip_ws();
+		return self.read_absolute_iri() if self._peek() eq "<";
+		return self.read_blank() if self._starts("_:");
+		self._error("Expected N-Triples subject");
+	}
+
+	method read_nt_predicate () {
+		self._skip_ws();
+		return self.read_absolute_iri() if self._peek() eq "<";
+		self._error("Expected N-Triples predicate IRI");
+	}
+
+	method read_nt_object () {
+		self._skip_ws();
+		return self.read_absolute_iri() if self._peek() eq "<";
+		return self.read_blank() if self._starts("_:");
+		return self.read_nt_literal() if self._peek() eq "\"";
+		self._error("Expected N-Triples object");
+	}
+
+	method read_nt_graph () {
+		self._skip_ws();
+		return self.read_absolute_iri() if self._peek() eq "<";
+		return self.read_blank() if self._starts("_:");
+		self._error("Expected N-Quads graph label");
+	}
+
+	method read_nt_statement ( Boolean graph_allowed ) {
+		self._skip_ws();
+		return null if self._peek() == null;
+		let s := self.read_nt_subject();
+		let p := self.read_nt_predicate();
+		let o := self.read_nt_object();
+		let g := rdf_default_graph();
+		self._skip_ws();
+		if ( graph_allowed and self._peek() ne "." ) {
+			g := self.read_nt_graph();
+		}
+		self._expect(".");
+		return rdf_quad( s, p, o, g );
+	}
+
+	method read_nt_all ( Boolean graph_allowed ) {
+		let out := [];
+		while ( true ) {
+			self._skip_ws();
+			last if self._peek() == null;
+			out.push(self.read_nt_statement(graph_allowed));
+		}
+		return out;
 	}
 
 	method read_statement ( Boolean graph_allowed ) {

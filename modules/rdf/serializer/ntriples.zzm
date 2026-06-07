@@ -4,26 +4,154 @@
 
 rdf/serializer/ntriples - N-Triples serializer.
 
+=head1 SYNOPSIS
+
+  from rdf/serializer/ntriples import NTriplesSerializer;
+
+  let text := (new NTriplesSerializer()).serialize(quads);
+
+
+=head1 DESCRIPTION
+
+C<NTriplesSerializer> serializes default-graph RDF quads as RDF 1.1
+N-Triples. It escapes control characters, quotes, backslashes, and IRI
+characters that cannot be emitted directly. It throws if a term cannot be
+represented in N-Triples, such as an invalid blank node label.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<NTriplesSerializer>
+
+=over
+
+=item C<< line(quad) >>
+
+Returns one N-Triples statement without a trailing newline. The graph term
+is ignored.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Calls C<emit> once per serialized line, including the trailing newline.
+Returns the serializer.
+
+=item C<< serialize(Array quads) >>
+
+Returns the complete serialized string, ending with a newline when there
+is at least one quad.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/ntriples >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import RDFBlank, RDFIRI, RDFLiteral, XSD_NS, rdf_iri, rdf_term_key;
-from std/string import join, replace;
+from std/string import contains, join, ord, substr;
+
+let _NT_HEX := "0123456789ABCDEF";
+
+function _nt_div_floor ( Number n, Number d ) {
+	return floor( n / d );
+}
+
+function _nt_mod ( Number n, Number d ) {
+	return n - _nt_div_floor( n, d ) * d;
+}
+
+function _nt_hex ( Number codepoint, Number width ) {
+	let value := codepoint;
+	let out := "";
+	while ( value > 0 ) {
+		out := substr( _NT_HEX, _nt_mod( value, 16 ), 1 ) _ out;
+		value := _nt_div_floor( value, 16 );
+	}
+	out := "0" if out eq "";
+	while ( length out < width ) {
+		out := "0" _ out;
+	}
+	return out;
+}
+
+function _nt_code_escape ( Number codepoint ) {
+	return "\\u" _ _nt_hex( codepoint, 4 ) if codepoint <= 65535;
+	return "\\U" _ _nt_hex( codepoint, 8 );
+}
 
 function _nt_escape ( String text ) {
-	let out := replace( text, /\\/, "\\\\", "g" );
-	out := replace( out, "\t", "\\t", "g" );
-	out := replace( out, "\n", "\\n", "g" );
-	out := replace( out, "\r", "\\r", "g" );
-	out := replace( out, "\"", "\\\"", "g" );
+	let out := "";
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		let code := ord( text, i );
+		if ( ch eq "\\" ) {
+			out _= "\\\\";
+		}
+		else if ( ch eq "\t" ) {
+			out _= "\\t";
+		}
+		else if ( ch eq "\n" ) {
+			out _= "\\n";
+		}
+		else if ( ch eq "\r" ) {
+			out _= "\\r";
+		}
+		else if ( ch eq "\"" ) {
+			out _= "\\\"";
+		}
+		else if ( code < 32 ) {
+			out _= _nt_code_escape(code);
+		}
+		else {
+			out _= ch;
+		}
+		i++;
+	}
 	return out;
+}
+
+function _nt_escape_iri ( String text ) {
+	let out := "";
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		let code := ord( text, i );
+		if ( code <= 32 or contains( "<>\"{}|^`\\", ch ) ) {
+			out _= _nt_code_escape(code);
+		}
+		else {
+			out _= ch;
+		}
+		i++;
+	}
+	return out;
+}
+
+function _nt_blank_label ( RDFBlank term ) {
+	let label := term.get_value();
+	die "rdf: cannot serialize invalid blank node label"
+		unless label ~ /^([A-Za-z_]|[0-9]|[^\x00-\x7F])([A-Za-z0-9_-]|[^\x00-\x7F]|\.)*$/ and
+		not( label ~ /\.$/ );
+	return label;
 }
 
 function _nt_term ( term ) {
 	if ( term instanceof RDFIRI ) {
-		return "<" _ term.get_value() _ ">";
+		return "<" _ _nt_escape_iri(term.get_value()) _ ">";
 	}
 	if ( term instanceof RDFBlank ) {
-		return "_:" _ term.get_value();
+		return "_:" _ _nt_blank_label(term);
 	}
 	if ( term instanceof RDFLiteral ) {
 		let out := "\"" _ _nt_escape(term.get_value()) _ "\"";
@@ -31,7 +159,7 @@ function _nt_term ( term ) {
 		if ( term.get_lang() eq "" and term.get_datatype() != null and
 			rdf_term_key(term.get_datatype()) ne
 			rdf_term_key(rdf_iri(XSD_NS _ "string")) ) {
-			out _= "^^<" _ term.get_datatype().get_value() _ ">";
+			out _= "^^<" _ _nt_escape_iri(term.get_datatype().get_value()) _ ">";
 		}
 		return out;
 	}
@@ -39,14 +167,24 @@ function _nt_term ( term ) {
 }
 
 class NTriplesSerializer {
+	method line ( quad ) {
+		return
+			_nt_term(quad.get_subject()) _ " " _
+			_nt_term(quad.get_predicate()) _ " " _
+			_nt_term(quad.get_object()) _ " .";
+	}
+
+	method serialize_each ( Array quads, Function emit ) {
+		for ( let quad in quads ) {
+			emit(self.line(quad) _ "\n");
+		}
+		return self;
+	}
+
 	method serialize ( Array quads ) {
 		let lines := [];
 		for ( let quad in quads ) {
-			lines.push(
-				_nt_term(quad.get_subject()) _ " " _
-				_nt_term(quad.get_predicate()) _ " " _
-				_nt_term(quad.get_object()) _ " .",
-			);
+			lines.push(self.line(quad));
 		}
 		return join( "\n", lines ) _ ( lines.length() > 0 ? "\n" : "" );
 	}

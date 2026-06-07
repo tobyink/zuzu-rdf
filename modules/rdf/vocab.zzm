@@ -1,0 +1,155 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/vocab - Common RDF vocabulary helpers.
+
+=head1 SYNOPSIS
+
+  from rdf/vocab import rdf_type, rdfs_class, xsd;
+
+  let type := rdf_type();
+  let integer := xsd("integer");
+
+
+=head1 DESCRIPTION
+
+This module exports small helpers for constructing IRI terms in the RDF,
+RDFS, OWL, and XSD namespaces, plus commonly used vocabulary terms.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< rdf(String local) >>
+
+Returns an IRI in the RDF namespace.
+
+=item C<< rdfs(String local) >>
+
+Returns an IRI in the RDFS namespace.
+
+=item C<< owl(String local) >>
+
+Returns an IRI in the OWL namespace.
+
+=item C<< xsd(String local) >>
+
+Returns an IRI in the XML Schema namespace.
+
+=item C<rdf_type>
+
+Returns C<rdf:type>.
+
+=item C<rdfs_class>
+
+Returns C<rdfs:Class>.
+
+=item C<rdfs_resource>
+
+Returns C<rdfs:Resource>.
+
+=item C<rdfs_subclass_of>
+
+Returns C<rdfs:subClassOf>.
+
+=item C<rdfs_subproperty_of>
+
+Returns C<rdfs:subPropertyOf>.
+
+=item C<rdfs_domain>
+
+Returns C<rdfs:domain>.
+
+=item C<rdfs_range>
+
+Returns C<rdfs:range>.
+
+=item C<owl_class>
+
+Returns C<owl:Class>.
+
+=item C<owl_thing>
+
+Returns C<owl:Thing>.
+
+=item C<owl_same_as>
+
+Returns C<owl:sameAs>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/vocab >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import
+	OWL_NS,
+	RDF_NS,
+	RDFS_NS,
+	XSD_NS;
+from rdf/term import rdf_iri;
+
+function rdf ( String local ) {
+	return rdf_iri(RDF_NS _ local);
+}
+
+function rdfs ( String local ) {
+	return rdf_iri(RDFS_NS _ local);
+}
+
+function owl ( String local ) {
+	return rdf_iri(OWL_NS _ local);
+}
+
+function xsd ( String local ) {
+	return rdf_iri(XSD_NS _ local);
+}
+
+function rdf_type () {
+	return rdf("type");
+}
+
+function rdfs_class () {
+	return rdfs("Class");
+}
+
+function rdfs_resource () {
+	return rdfs("Resource");
+}
+
+function rdfs_subclass_of () {
+	return rdfs("subClassOf");
+}
+
+function rdfs_subproperty_of () {
+	return rdfs("subPropertyOf");
+}
+
+function rdfs_domain () {
+	return rdfs("domain");
+}
+
+function rdfs_range () {
+	return rdfs("range");
+}
+
+function owl_class () {
+	return owl("Class");
+}
+
+function owl_thing () {
+	return owl("Thing");
+}
+
+function owl_same_as () {
+	return owl("sameAs");
+}

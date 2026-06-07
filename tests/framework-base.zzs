@@ -1,0 +1,121 @@
+from test/more import *;
+
+requires_capability( "db" );
+
+from rdf import
+	RDFStore,
+	rdf_blank,
+	rdf_blank_scope,
+	rdf_dataset_canonical_string,
+	rdf_datasets_isomorphic,
+	rdf_graph_isomorphic,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_quads_minus,
+	rdf_quads_patch,
+	rdf_quads_union,
+	rdf_relabel_blank_nodes,
+	rdf_skolemize_blank_nodes,
+	rdf_stable_relabel_blank_nodes;
+from std/db import DB;
+
+let ex_s := rdf_iri("http://example.com/s");
+let ex_p := rdf_iri("http://example.com/p");
+let ex_q := rdf_iri("http://example.com/q");
+let ex_g1 := rdf_iri("http://example.com/g1");
+let ex_g2 := rdf_iri("http://example.com/g2");
+
+let left := [
+	rdf_quad( rdf_blank("a"), ex_p, rdf_blank("b") ),
+	rdf_quad( rdf_blank("b"), ex_q, rdf_literal("value") ),
+];
+let right := [
+	rdf_quad( rdf_blank("x"), ex_p, rdf_blank("y") ),
+	rdf_quad( rdf_blank("y"), ex_q, rdf_literal("value") ),
+];
+ok( rdf_graph_isomorphic( left, right ), "graph isomorphism ignores blank labels" );
+is(
+	rdf_dataset_canonical_string(left),
+	rdf_dataset_canonical_string(right),
+	"canonical dataset string is stable across blank labels",
+);
+
+let relabelled := rdf_relabel_blank_nodes( left, { a: "one", b: "two" } );
+is( relabelled[0].get_subject().get_value(), "one", "blank relabelling rewrites subjects" );
+let stable := rdf_stable_relabel_blank_nodes(left);
+is( stable[0].get_subject().get_value(), "b0", "stable relabelling uses deterministic labels" );
+let skolem := rdf_skolemize_blank_nodes( left, "urn:test:" );
+is( skolem[0].get_subject().get_value(), "urn:test:a", "skolemization rewrites blank nodes to IRIs" );
+
+let scope := rdf_blank_scope("scope");
+is( scope.fresh().get_value(), "scope1", "blank node scope creates first label" );
+is( scope.fresh().get_value(), "scope2", "blank node scope creates second label" );
+scope.reset();
+is( scope.fresh().get_value(), "scope1", "blank node scope can reset" );
+
+let merged_quads := rdf_quads_union( [ left[0] ], [ left[0], left[1] ] );
+is( merged_quads.length(), 2, "quad union deduplicates" );
+is( rdf_quads_minus( merged_quads, [ left[0] ] ).length(), 1, "quad minus removes matching quads" );
+is(
+	rdf_quads_patch( [ left[0] ], [ left[0] ], [ left[1] ] )[0]
+		.get_predicate().get_value(),
+	ex_q.get_value(),
+	"quad patch removes and adds",
+);
+
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+store.add_quads_bulk([
+	rdf_quad( ex_s, ex_p, rdf_literal("default") ),
+	rdf_quad( ex_s, ex_p, rdf_literal("one"), ex_g1 ),
+	rdf_quad( ex_s, ex_q, rdf_literal("two"), ex_g2 ),
+]);
+is( store.count_quads(), 3, "bulk add stores quads" );
+is( store.graph_names().length(), 2, "graph_names lists named graphs" );
+ok( store.graph_exists(ex_g1), "graph_exists detects named graph" );
+store.copy_graph( ex_g1, ex_g2 );
+is( store.find( null, null, null, ex_g2 ).length(), 1, "copy_graph replaces target graph" );
+is(
+	store.find( null, null, null, ex_g2 )[0].get_object().get_value(),
+	"one",
+	"copy_graph copies source contents",
+);
+store.add_graph( null, ex_g2 );
+is( store.find( null, null, null, ex_g2 ).length(), 2, "add_graph merges into target graph" );
+store.move_graph( ex_g2, ex_g1 );
+is( store.find( null, null, null, ex_g2 ).length(), 0, "move_graph clears source graph" );
+is( store.find( null, null, null, ex_g1 ).length(), 2, "move_graph writes target graph" );
+store.clear_graph(ex_g1);
+is( store.find( null, null, null, ex_g1 ).length(), 0, "clear_graph removes only selected graph" );
+ok( store.count_quads() > 0, "clear_graph leaves other graphs intact" );
+
+let rolled_back := false;
+try {
+	store.with_transaction(function ( s ) {
+		s.add_quad(rdf_quad( rdf_iri("http://example.com/temp"), ex_p, rdf_literal("x") ));
+		die "rollback";
+	});
+}
+catch {
+	rolled_back := true;
+}
+ok( rolled_back, "with_transaction rethrows errors" );
+is(
+	store.find(rdf_iri("http://example.com/temp")).length(),
+	0,
+	"with_transaction rolls back failed work",
+);
+
+let stats := store.statistics();
+ok( stats{quad_count} >= 1, "statistics reports quad count" );
+is( stats{backend}, "sqlite", "statistics reports backend" );
+let diag := store.diagnostics();
+ok( diag{schema_ok}, "diagnostics reports schema status" );
+is(
+	store.explain_find( ex_s, ex_p ){index},
+	"rdf_quads_sp",
+	"explain_find reports selected index",
+);
+
+done_testing();

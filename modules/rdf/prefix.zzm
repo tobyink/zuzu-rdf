@@ -1,0 +1,130 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/prefix - Namespace and prefix registry helpers.
+
+=head1 SYNOPSIS
+
+  from rdf/prefix import RDFPrefixRegistry;
+
+  let prefixes := new RDFPrefixRegistry();
+  prefixes.set("ex", "http://example.com/");
+  let term := prefixes.expand("ex:thing");
+
+
+=head1 DESCRIPTION
+
+C<RDFPrefixRegistry> stores namespace prefix mappings and converts between
+prefixed names and IRI terms. New registries include the C<rdf>, C<rdfs>,
+C<owl>, and C<xsd> prefixes.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFPrefixRegistry>
+
+=over
+
+=item C<< set(String prefix, String iri) >>
+
+Registers C<prefix> and returns the registry.
+
+=item C<< get(String prefix, fallback := null) >>
+
+Returns the namespace IRI for C<prefix>, or C<fallback>.
+
+=item C<< exists(String prefix) >>
+
+Returns true if C<prefix> is registered.
+
+=item C<< expand(String value) >>
+
+Expands a prefixed name to an C<RDFIRI>. Throws if the prefix is unknown.
+Values without a colon are treated as absolute IRIs.
+
+=item C<< compact(value) >>
+
+Returns the shortest registered prefixed-name form for an IRI when
+possible, otherwise the full IRI string.
+
+=item C<< as_dict() >>
+
+Returns a dictionary copy of the prefix mappings.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/prefix >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import OWL_NS, RDF_NS, RDFS_NS, XSD_NS;
+from rdf/term import RDFIRI, rdf_iri;
+from std/string import contains, split, starts_with, substr;
+
+class RDFPrefixRegistry {
+	let Dict prefixes := {};
+
+	method __build__ () {
+		self.set( "rdf", RDF_NS );
+		self.set( "rdfs", RDFS_NS );
+		self.set( "owl", OWL_NS );
+		self.set( "xsd", XSD_NS );
+	}
+
+	method set ( String prefix, String iri ) {
+		prefixes.set( prefix, iri );
+		return self;
+	}
+
+	method get ( String prefix, fallback := null ) {
+		return prefixes.get( prefix, fallback );
+	}
+
+	method exists ( String prefix ) {
+		return prefixes.exists(prefix);
+	}
+
+	method expand ( String value ) {
+		return rdf_iri(value) if starts_with( value, "http://" ) or
+			starts_with( value, "https://" ) or starts_with( value, "urn:" );
+		let parts := split( value, ":", 2 );
+		die "rdf: prefixed name expected" unless parts.length() == 2;
+		die "rdf: unknown prefix " _ parts[0] unless prefixes.exists(parts[0]);
+		return rdf_iri(prefixes.get(parts[0]) _ parts[1]);
+	}
+
+	method compact ( value ) {
+		let iri := value instanceof RDFIRI ? value.get_value() : "" _ value;
+		let best_prefix := "";
+		let best_base := "";
+		for ( let prefix in prefixes.keys() ) {
+			let base := prefixes.get(prefix);
+			if ( starts_with( iri, base ) and length base > length best_base ) {
+				best_prefix := prefix;
+				best_base := base;
+			}
+		}
+		return iri if best_prefix eq "";
+		return best_prefix _ ":" _ substr( iri, length best_base );
+	}
+
+	method as_dict () {
+		let out := {};
+		for ( let prefix in prefixes.keys() ) {
+			out.set( prefix, prefixes.get(prefix) );
+		}
+		return out;
+	}
+}

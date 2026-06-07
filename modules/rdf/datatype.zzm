@@ -1,0 +1,188 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/datatype - RDF literal value-space helpers.
+
+=head1 SYNOPSIS
+
+  from rdf/datatype import rdf_literal_canonical, rdf_literal_compare;
+  from rdf/term import rdf_literal, rdf_iri;
+  from rdf/ns import XSD_NS;
+
+  let a := rdf_literal("01", datatype: rdf_iri(XSD_NS _ "integer"));
+  let b := rdf_literal("1", datatype: rdf_iri(XSD_NS _ "integer"));
+  ok(rdf_literal_compare(a, b) == 0);
+
+
+=head1 DESCRIPTION
+
+This module provides value-space helpers for RDF literals. It canonicalizes
+common XML Schema lexical forms and compares literals after datatype-aware
+normalization where supported.
+
+=head1 SUPPORTED TYPES
+
+The helpers cover strings, language strings, booleans, integer and
+decimal numeric forms, doubles, dates, times, and dateTimes. Unknown
+datatypes are compared by exact RDF term key.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< rdf_literal_canonical_lexical(RDFLiteral literal) >>
+
+Returns the canonical lexical form for supported datatypes, or the
+original lexical form for unsupported datatypes.
+
+=item C<< rdf_literal_canonical(RDFLiteral literal) >>
+
+Returns a literal with a canonical lexical form and the same language and
+datatype.
+
+=item C<< rdf_literal_numeric(RDFLiteral literal) >>
+
+Returns a numeric value for supported numeric datatypes, or C<null> when
+the literal is not numeric.
+
+=item C<< rdf_literal_compare(RDFLiteral left, RDFLiteral right) >>
+
+Compares two literals and returns C<-1>, C<0>, or C<1>. Numeric literals
+are compared by numeric value; other supported types use canonical term
+keys.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/datatype >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/ns import XSD_NS;
+from rdf/term import RDFLiteral, rdf_iri, rdf_literal, rdf_term_key;
+from std/string import contains, replace, split, starts_with, substr, trim;
+
+function _rdf_dt ( RDFLiteral literal ) {
+	return literal.get_datatype().get_value();
+}
+
+function _rdf_strip_plus ( String text ) {
+	return starts_with( text, "+" ) ? substr( text, 1 ) : text;
+}
+
+function _rdf_canonical_integer_text ( String text ) {
+	let value := _rdf_strip_plus(trim(text));
+	let sign := "";
+	if ( starts_with( value, "-" ) ) {
+		sign := "-";
+		value := substr( value, 1 );
+	}
+	while ( length value > 1 and starts_with( value, "0" ) ) {
+		value := substr( value, 1 );
+	}
+	return "0" if value eq "" or value ~ /^0+$/;
+	return sign _ value;
+}
+
+function _rdf_canonical_decimal_text ( String text ) {
+	let value := _rdf_strip_plus(trim(text));
+	let sign := "";
+	if ( starts_with( value, "-" ) ) {
+		sign := "-";
+		value := substr( value, 1 );
+	}
+	let parts := split( value, ".", 2 );
+	let whole := _rdf_canonical_integer_text(parts[0]);
+	let frac := parts.length() > 1 ? parts[1] : "0";
+	while ( length frac > 1 and substr( frac, length frac - 1, 1 ) eq "0" ) {
+		frac := substr( frac, 0, length frac - 1 );
+	}
+	return "0.0" if whole eq "0" and frac ~ /^0*$/;
+	return sign _ whole _ "." _ ( frac eq "" ? "0" : frac );
+}
+
+function _rdf_canonical_double_text ( String text ) {
+	let value := trim(text);
+	return "INF" if value eq "INF" or value eq "+INF";
+	return "-INF" if value eq "-INF";
+	return "NaN" if uc(value) eq "NAN";
+	let number := 0 + value;
+	return "0.0E0" if number == 0;
+	let raw := "" _ number;
+	return replace( raw, /e/, "E", "g" ) if contains( lc(raw), "e" );
+	return raw _ ".0E0";
+}
+
+function rdf_literal_canonical_lexical ( RDFLiteral literal ) {
+	let dt := _rdf_dt(literal);
+	let value := literal.get_value();
+	if ( dt eq XSD_NS _ "integer" or dt eq XSD_NS _ "int" or
+		dt eq XSD_NS _ "long" or dt eq XSD_NS _ "short" or
+		dt eq XSD_NS _ "byte" or dt eq XSD_NS _ "nonNegativeInteger" or
+		dt eq XSD_NS _ "nonPositiveInteger" or dt eq XSD_NS _ "positiveInteger" or
+		dt eq XSD_NS _ "negativeInteger" or dt eq XSD_NS _ "unsignedLong" or
+		dt eq XSD_NS _ "unsignedInt" or dt eq XSD_NS _ "unsignedShort" or
+		dt eq XSD_NS _ "unsignedByte"
+	) {
+		return _rdf_canonical_integer_text(value);
+	}
+	if ( dt eq XSD_NS _ "decimal" ) {
+		return _rdf_canonical_decimal_text(value);
+	}
+	if ( dt eq XSD_NS _ "double" or dt eq XSD_NS _ "float" ) {
+		return _rdf_canonical_double_text(value);
+	}
+	if ( dt eq XSD_NS _ "boolean" ) {
+		return ( lc(value) eq "true" or value eq "1" ) ? "true" : "false";
+	}
+	if ( dt eq XSD_NS _ "dateTime" or dt eq XSD_NS _ "date" or
+		dt eq XSD_NS _ "time"
+	) {
+		return replace( trim(value), /Z$/, "+00:00", "" );
+	}
+	return value;
+}
+
+function rdf_literal_canonical ( RDFLiteral literal ) {
+	return rdf_literal(
+		rdf_literal_canonical_lexical(literal),
+		literal.get_lang(),
+		literal.get_datatype(),
+	);
+}
+
+function rdf_literal_numeric ( RDFLiteral literal ) {
+	let dt := _rdf_dt(literal);
+	return null unless dt eq XSD_NS _ "integer" or dt eq XSD_NS _ "int" or
+		dt eq XSD_NS _ "long" or dt eq XSD_NS _ "short" or
+		dt eq XSD_NS _ "byte" or dt eq XSD_NS _ "decimal" or
+		dt eq XSD_NS _ "double" or dt eq XSD_NS _ "float" or
+		dt eq XSD_NS _ "nonNegativeInteger" or
+		dt eq XSD_NS _ "nonPositiveInteger" or
+		dt eq XSD_NS _ "positiveInteger" or
+		dt eq XSD_NS _ "negativeInteger" or
+		dt eq XSD_NS _ "unsignedLong" or dt eq XSD_NS _ "unsignedInt" or
+		dt eq XSD_NS _ "unsignedShort" or dt eq XSD_NS _ "unsignedByte";
+	return 0 + literal.get_value();
+}
+
+function rdf_literal_compare ( RDFLiteral left, RDFLiteral right ) {
+	let lnum := rdf_literal_numeric(left);
+	let rnum := rdf_literal_numeric(right);
+	if ( lnum != null and rnum != null ) {
+		return -1 if lnum < rnum;
+		return 1 if lnum > rnum;
+		return 0;
+	}
+	let lkey := rdf_term_key(rdf_literal_canonical(left));
+	let rkey := rdf_term_key(rdf_literal_canonical(right));
+	return lkey cmp rkey;
+}

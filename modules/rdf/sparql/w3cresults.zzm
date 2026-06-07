@@ -4,6 +4,59 @@
 
 rdf/sparql/w3cresults - W3C SPARQL result-set comparison helpers.
 
+=head1 SYNOPSIS
+
+  from rdf/sparql/w3cresults import sparql_w3c_results_match_file;
+
+  ok(sparql_w3c_results_match_file(actual, result_path));
+
+
+=head1 DESCRIPTION
+
+This module contains test-support helpers for comparing SPARQL results
+against W3C result-set fixtures. It handles SELECT/ASK result files,
+graph-result files, blank node matching, XML literals, optional bindings,
+and unordered result bags.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_w3c_graph_match(Array actual, Array expected) >>
+
+Returns true if two graph-result quad arrays match, including blank node
+isomorphism.
+
+=item C<< sparql_w3c_graph_match_file(actual, path) >>
+
+Parses the expected graph result from C<path> and compares it with
+C<actual>.
+
+=item C<< sparql_w3c_read_results(path) >>
+
+Reads a W3C SPARQL result-set XML or JSON fixture and returns a result
+dictionary.
+
+=item C<< sparql_w3c_results_match(actual, expected) >>
+
+Compares two SPARQL SELECT or ASK result dictionaries.
+
+=item C<< sparql_w3c_results_match_file(actual, path) >>
+
+Reads the expected W3C result fixture and compares it with C<actual>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/w3cresults >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import

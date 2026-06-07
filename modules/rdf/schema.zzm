@@ -1,0 +1,321 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/schema - RDFS vocabulary helpers and entailment store.
+
+=head1 SYNOPSIS
+
+  from rdf/schema import RDFSchemaStore;
+  from std/db import DB;
+
+  let store := new RDFSchemaStore(dbh: DB.temp());
+  store.install_schema();
+  let quads := store.find();  // includes inferred RDFS quads
+
+
+=head1 DESCRIPTION
+
+C<RDFSchemaStore> extends C<RDFStore> with simple RDFS entailment. It
+returns explicit and inferred quads for subclass, subproperty, domain,
+range, and type relationships. The explicit store content is unchanged;
+inferences are computed from stored quads when queried.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFSchemaStore>
+
+A subclass of C<RDFStore>.
+
+=over
+
+=item C<< explicit_find(subject := null, predicate := null, object := null, graph := null) >>
+
+Returns only stored quads matching the pattern.
+
+=item C<< inferred_quads() >>
+
+Returns inferred quads that are not explicitly stored.
+
+=item C<< find(subject := null, predicate := null, object := null, graph := null) >>
+
+Returns explicit and inferred quads matching the pattern.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/schema >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/graph import rdf_quads_unique;
+from rdf/store import RDFStore;
+from rdf/term import
+	RDFBlank,
+	RDFIRI,
+	RDFLiteral,
+	RDF_NS,
+	rdf_iri,
+	rdf_quad,
+	rdf_term_equals,
+	rdf_term_key;
+from rdf/vocab import
+	rdf_type,
+	rdfs_domain,
+	rdfs_range,
+	rdfs_subclass_of,
+	rdfs_subproperty_of;
+
+function _rdfs_quad_key ( quad ) {
+	return rdf_term_key(quad.get_subject()) _ "\n" _
+		rdf_term_key(quad.get_predicate()) _ "\n" _
+		rdf_term_key(quad.get_object()) _ "\n" _
+		rdf_term_key(quad.get_graph());
+}
+
+function _rdfs_add_quad ( Array out, Dict seen, quad ) {
+	let key := _rdfs_quad_key(quad);
+	return false if seen.exists(key);
+	seen.set( key, true );
+	out.push(quad);
+	return true;
+}
+
+function _rdfs_pair_key ( left, right ) {
+	return rdf_term_key(left) _ "\n" _ rdf_term_key(right);
+}
+
+function _rdfs_add_pair ( Array pairs, Dict seen, left, right, graph ) {
+	let key := _rdfs_pair_key( left, right );
+	return false if seen.exists(key);
+	seen.set( key, true );
+	pairs.push({ left: left, right: right, graph: graph });
+	return true;
+}
+
+function _rdfs_pairs_for_predicate ( Array quads, predicate ) {
+	let pairs := [];
+	let seen := {};
+	for ( let quad in quads ) {
+		next unless rdf_term_equals( quad.get_predicate(), predicate );
+		_rdfs_add_pair(
+			pairs,
+			seen,
+			quad.get_subject(),
+			quad.get_object(),
+			quad.get_graph(),
+		);
+	}
+	return pairs;
+}
+
+function _rdfs_array_copy ( Array values ) {
+	let out := [];
+	for ( let value in values ) {
+		out.push(value);
+	}
+	return out;
+}
+
+function _rdfs_pair_closure ( Array pairs ) {
+	let out := [];
+	let seen := {};
+	for ( let pair in pairs ) {
+		_rdfs_add_pair( out, seen, pair{left}, pair{right}, pair{graph} );
+	}
+	let changed := true;
+	while ( changed ) {
+		changed := false;
+		let snapshot := _rdfs_array_copy(out);
+		for ( let left in snapshot ) {
+			for ( let right in snapshot ) {
+				if ( rdf_term_equals( left{right}, right{left} ) ) {
+					changed := true if _rdfs_add_pair(
+						out,
+						seen,
+						left{left},
+						right{right},
+						left{graph},
+					);
+				}
+			}
+		}
+	}
+	return out;
+}
+
+function _rdfs_super_terms ( term, Array closure ) {
+	let out := [];
+	let seen := {};
+	for ( let pair in closure ) {
+		next unless rdf_term_equals( pair{left}, term );
+		let key := rdf_term_key(pair{right});
+		next if seen.exists(key);
+		seen.set( key, true );
+		out.push(pair{right});
+	}
+	return out;
+}
+
+function _rdfs_matches ( quad, subject, predicate, object, graph ) {
+	return false if subject != null and
+		not rdf_term_equals( quad.get_subject(), subject );
+	return false if predicate != null and
+		not rdf_term_equals( quad.get_predicate(), predicate );
+	return false if object != null and
+		not rdf_term_equals( quad.get_object(), object );
+	return false if graph != null and
+		not rdf_term_equals( quad.get_graph(), graph );
+	return true;
+}
+
+class RDFSchemaStore extends RDFStore {
+	method explicit_find ( subject := null, predicate := null,
+		object := null, graph := null ) {
+		return super( subject, predicate, object, graph );
+	}
+
+	method inferred_quads () {
+		let explicit := self.explicit_find();
+		let inferred := [];
+		let seen := {};
+		for ( let quad in explicit ) {
+			seen.set( _rdfs_quad_key(quad), true );
+		}
+		let subclass := _rdfs_pair_closure(_rdfs_pairs_for_predicate(
+			explicit,
+			rdfs_subclass_of(),
+		));
+		let subproperty := _rdfs_pair_closure(_rdfs_pairs_for_predicate(
+			explicit,
+			rdfs_subproperty_of(),
+		));
+		for ( let pair in subclass ) {
+			_rdfs_add_quad(
+				inferred,
+				seen,
+				rdf_quad(
+					pair{left},
+					rdfs_subclass_of(),
+					pair{right},
+					pair{graph},
+				),
+			);
+		}
+		for ( let pair in subproperty ) {
+			_rdfs_add_quad(
+				inferred,
+				seen,
+				rdf_quad(
+					pair{left},
+					rdfs_subproperty_of(),
+					pair{right},
+					pair{graph},
+				),
+			);
+		}
+		let data_quads := _rdfs_array_copy(explicit);
+		for ( let quad in explicit ) {
+			for ( let super_p in _rdfs_super_terms(
+				quad.get_predicate(),
+				subproperty,
+			) ) {
+				let inferred_quad := rdf_quad(
+					quad.get_subject(),
+					super_p,
+					quad.get_object(),
+					quad.get_graph(),
+				);
+				if ( _rdfs_add_quad( inferred, seen, inferred_quad ) ) {
+					data_quads.push(inferred_quad);
+				}
+			}
+		}
+		for ( let quad in data_quads ) {
+			for ( let domain in self.explicit_find(
+				quad.get_predicate(),
+				rdfs_domain(),
+			) ) {
+				_rdfs_add_quad(
+					inferred,
+					seen,
+					rdf_quad(
+						quad.get_subject(),
+						rdf_type(),
+						domain.get_object(),
+						quad.get_graph(),
+					),
+				);
+			}
+			if ( quad.get_object() instanceof RDFIRI or
+				quad.get_object() instanceof RDFBlank
+			) {
+				for ( let range in self.explicit_find(
+					quad.get_predicate(),
+					rdfs_range(),
+				) ) {
+					_rdfs_add_quad(
+						inferred,
+						seen,
+						rdf_quad(
+							quad.get_object(),
+							rdf_type(),
+							range.get_object(),
+							quad.get_graph(),
+						),
+					);
+				}
+			}
+		}
+		let all_types := [];
+		for ( let quad in explicit ) {
+			all_types.push(quad) if rdf_term_equals( quad.get_predicate(), rdf_type() );
+		}
+		for ( let quad in inferred ) {
+			all_types.push(quad) if rdf_term_equals( quad.get_predicate(), rdf_type() );
+		}
+		for ( let quad in all_types ) {
+			for ( let super_class in _rdfs_super_terms(
+				quad.get_object(),
+				subclass,
+			) ) {
+				_rdfs_add_quad(
+					inferred,
+					seen,
+					rdf_quad(
+						quad.get_subject(),
+						rdf_type(),
+						super_class,
+						quad.get_graph(),
+					),
+				);
+			}
+		}
+		return inferred;
+	}
+
+	method find ( subject := null, predicate := null, object := null,
+		graph := null ) {
+		let out := self.explicit_find( subject, predicate, object, graph );
+		let seen := {};
+		for ( let quad in out ) {
+			seen.set( _rdfs_quad_key(quad), true );
+		}
+		for ( let quad in self.inferred_quads() ) {
+			next unless _rdfs_matches( quad, subject, predicate, object, graph );
+			_rdfs_add_quad( out, seen, quad );
+		}
+		return out;
+	}
+}

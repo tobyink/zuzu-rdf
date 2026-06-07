@@ -942,8 +942,8 @@ like(
 	exception( function () {
 		sparql_query( store, "INSERT DATA { <a> <b> <c> . }" );
 	} ),
-	/SPARQL Update is not implemented/,
-	"SPARQL Update is reserved with stable diagnostic",
+	/use sparql_update/,
+	"SPARQL query entrypoint directs Update text to sparql_update",
 );
 
 done_testing();

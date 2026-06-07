@@ -1,0 +1,506 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/client - SPARQL Protocol HTTP client.
+
+=head1 SYNOPSIS
+
+  from rdf/sparql/client import SPARQLProtocolClient;
+
+  let client := new SPARQLProtocolClient(
+      endpoint: "https://example.com/sparql",
+  );
+  let result := client.query("ASK { ?s ?p ?o }");
+
+
+=head1 DESCRIPTION
+
+C<SPARQLProtocolClient> sends SPARQL Query and Update requests to a remote
+HTTP(S) SPARQL Protocol endpoint. Query results are parsed into the same
+dictionary shapes returned by C<rdf/sparql> C<sparql_query>. Successful
+updates return the same summary shape as C<sparql_update>, using local
+syntax parsing to report operation names and counts.
+
+The client prefers SPARQL JSON results for C<SELECT> and C<ASK>, and
+N-Quads for graph results. It can also parse SPARQL XML, CSV, TSV,
+N-Triples, N-Quads, and Turtle responses when returned by the server.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<SPARQLProtocolClient>
+
+Construct with C<endpoint>. Optional constructor keys are C<user_agent>,
+C<default_graph_uri>, C<named_graph_uri>, and C<headers>.
+
+=over
+
+=item C<< query(String query, ... options) >>
+
+Sends a SPARQL Query request and returns a result dictionary. Options may
+include C<default_graph_uri>, C<named_graph_uri>, and C<headers>.
+
+=item C<< update(String update, ... options) >>
+
+Sends a SPARQL Update request and returns an update summary dictionary.
+Options may include C<using_graph_uri>, C<using_named_graph_uri>, and
+C<headers>.
+
+=back
+
+=back
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_protocol_query(String endpoint, String query, ... options) >>
+
+Convenience function that constructs a client and calls C<query>.
+
+=item C<< sparql_protocol_update(String endpoint, String update, ... options) >>
+
+Convenience function that constructs a client and calls C<update>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/client >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/parser/nquads import NQuadsParser;
+from rdf/parser/ntriples import NTriplesParser;
+from rdf/parser/turtle import TurtleParser;
+from rdf/sparql/parser import sparql_parse_ast;
+from rdf/term import
+	RDFSyntaxError,
+	SPARQLError,
+	rdf_blank,
+	rdf_iri,
+	rdf_literal;
+from std/data/json import JSON;
+from std/data/xml import XML;
+from std/net/http try import UserAgent as _HTTPUserAgent;
+from std/net/url import escape as _url_escape;
+from std/string import contains, ends_with, join, split, starts_with, substr,
+	trim;
+
+function _sparql_client_pairs ( PairList options ) {
+	let out := {};
+	for ( let pair in options.to_Array() ) {
+		out.set( pair.key, pair.value );
+	}
+	return out;
+}
+
+function _sparql_client_array ( value ) {
+	return [] if value == null;
+	return value if value instanceof Array;
+	return [ value ];
+}
+
+function _sparql_client_form_value ( String name, value, Array out ) {
+	for ( let item in _sparql_client_array(value) ) {
+		out.push(_url_escape(name) _ "=" _ _url_escape("" _ item));
+	}
+}
+
+function _sparql_client_form ( Dict values ) {
+	let out := [];
+	for ( let key in values.keys().sort( fn ( a, b ) -> a cmp b ) ) {
+		_sparql_client_form_value( key, values.get(key), out );
+	}
+	return join( "&", out );
+}
+
+function _sparql_client_header_type ( response ) {
+	let value := response.header("content-type");
+	value := "" if value == null;
+	return lc(split( value, ";" )[0]);
+}
+
+function _sparql_client_response_text ( response ) {
+	return "" _ response.content();
+}
+
+function _sparql_client_json_term ( item ) {
+	let kind := item.get( "type", "" );
+	if ( kind eq "uri" ) {
+		return rdf_iri(item{value});
+	}
+	if ( kind eq "bnode" ) {
+		return rdf_blank(item{value});
+	}
+	if ( kind eq "literal" or kind eq "typed-literal" ) {
+		let lang := item.get( "xml:lang", item.get( "lang", "" ) );
+		let datatype := item.exists("datatype")
+			? rdf_iri(item{datatype})
+			: null;
+		return rdf_literal( item{value}, lang, datatype );
+	}
+	return null;
+}
+
+function _sparql_client_parse_json_results ( String text ) {
+	let data := ( new JSON() ).decode(text);
+	if ( data.exists("boolean") ) {
+		return { type: "ask", boolean: data{boolean} ? true : false };
+	}
+	let rows := [];
+	for ( let item in data{results}{bindings} ) {
+		let row := {};
+		for ( let key in item.keys() ) {
+			row.set( key, _sparql_client_json_term(item.get(key)) );
+		}
+		rows.push(row);
+	}
+	return {
+		type: "select",
+		variables: data{head}.get( "vars", [] ),
+		results: rows,
+	};
+}
+
+function _sparql_client_xml_term ( node ) {
+	let name := node.localName();
+	if ( name eq "uri" ) {
+		return rdf_iri(node.textContent());
+	}
+	if ( name eq "bnode" ) {
+		return rdf_blank(node.textContent());
+	}
+	if ( name eq "literal" ) {
+		let lang := node.getAttribute("xml:lang");
+		lang := node.getAttribute("lang") if lang eq "";
+		let datatype := node.getAttribute("datatype");
+		return rdf_literal(
+			node.textContent(),
+			lang,
+			datatype eq "" ? null : rdf_iri(datatype),
+		);
+	}
+	return null;
+}
+
+function _sparql_client_parse_xml_results ( String text ) {
+	let doc := XML.parse(text);
+	let boolean := doc.findvalue(
+		"/*[local-name()='sparql']/*[local-name()='boolean']",
+	);
+	if ( boolean ne "" ) {
+		return { type: "ask", boolean: lc(boolean) eq "true" };
+	}
+	let vars := [];
+	for ( let var in doc.findnodes(
+		"/*[local-name()='sparql']/*[local-name()='head']" _
+		"/*[local-name()='variable']",
+	) ) {
+		vars.push(var.getAttribute("name"));
+	}
+	let rows := [];
+	for ( let result in doc.findnodes(
+		"/*[local-name()='sparql']/*[local-name()='results']" _
+		"/*[local-name()='result']",
+	) ) {
+		let row := {};
+		for ( let binding in result.findnodes("*[local-name()='binding']") ) {
+			let children := binding.children();
+			next if children.length() == 0;
+			row.set(
+				binding.getAttribute("name"),
+				_sparql_client_xml_term(children[0]),
+			);
+		}
+		rows.push(row);
+	}
+	return { type: "select", variables: vars, results: rows };
+}
+
+function _sparql_client_csv_line ( String line ) {
+	let cells := [];
+	let cell := "";
+	let quoted := false;
+	let i := 0;
+	while ( i < length line ) {
+		let ch := substr( line, i, 1 );
+		if ( quoted ) {
+			if ( ch eq "\"" ) {
+				if ( substr( line, i + 1, 1 ) eq "\"" ) {
+					cell _= "\"";
+					i += 2;
+					next;
+				}
+				quoted := false;
+				i++;
+				next;
+			}
+			cell _= ch;
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( ch eq "," ) {
+			cells.push(cell);
+			cell := "";
+			i++;
+			next;
+		}
+		cell _= ch;
+		i++;
+	}
+	cells.push(cell);
+	return cells;
+}
+
+function _sparql_client_parse_csv_results ( String text ) {
+	let lines := [];
+	for ( let line in split( text, "\n" ) ) {
+		line := substr( line, 0, length line - 1 )
+			if ends_with( line, "\r" );
+		lines.push(line) unless line eq "";
+	}
+	return { type: "ask", boolean: lc(lines[1]) eq "true" }
+		if lines.length() >= 2 and lc(lines[0]) eq "boolean";
+	let vars := _sparql_client_csv_line(lines[0]);
+	let rows := [];
+	let i := 1;
+	while ( i < lines.length() ) {
+		let values := _sparql_client_csv_line(lines[i]);
+		let row := {};
+		let j := 0;
+		while ( j < vars.length() ) {
+			row.set( vars[j], values[j] eq "" ? null : rdf_literal(values[j]) );
+			j++;
+		}
+		rows.push(row);
+		i++;
+	}
+	return { type: "select", variables: vars, results: rows };
+}
+
+function _sparql_client_tsv_term ( String text ) {
+	return null if text eq "";
+	let parsed := ( new NTriplesParser() ).parse_string(
+		"<urn:zuzu:s> <urn:zuzu:p> " _ text _ " .",
+	);
+	return parsed[0].get_object();
+}
+
+function _sparql_client_parse_tsv_results ( String text ) {
+	let lines := [];
+	for ( let line in split( text, "\n" ) ) {
+		line := substr( line, 0, length line - 1 )
+			if ends_with( line, "\r" );
+		lines.push(line) unless line eq "";
+	}
+	return { type: "ask", boolean: lc(lines[1]) eq "true" }
+		if lines.length() >= 2 and lc(lines[0]) eq "?boolean";
+	let vars := split( lines[0], "\t" ).map(
+		fn var -> starts_with( var, "?" ) ? substr( var, 1 ) : var,
+	);
+	let rows := [];
+	let i := 1;
+	while ( i < lines.length() ) {
+		let values := split( lines[i], "\t" );
+		let row := {};
+		let j := 0;
+		while ( j < vars.length() ) {
+			row.set( vars[j], _sparql_client_tsv_term(values[j]) );
+			j++;
+		}
+		rows.push(row);
+		i++;
+	}
+	return { type: "select", variables: vars, results: rows };
+}
+
+function _sparql_client_query_kind ( String query ) {
+	let ast := sparql_parse_ast(query);
+	throw new SPARQLError(message: "SPARQL query expected")
+		if ast{type} eq "update";
+	return ast{kind};
+}
+
+function _sparql_client_graph_result ( String query, String text,
+	String content_type ) {
+	let kind := _sparql_client_query_kind(query);
+	let quads := [];
+	if ( contains( content_type, "n-quads" ) ) {
+		quads := ( new NQuadsParser() ).parse_string(text);
+	}
+	else if ( contains( content_type, "n-triples" ) ) {
+		quads := ( new NTriplesParser() ).parse_string(text);
+	}
+	else {
+		quads := ( new TurtleParser() ).parse_string(text);
+	}
+	return { type: kind, quads: quads };
+}
+
+function _sparql_client_parse_query_response ( String query, response ) {
+	let content_type := _sparql_client_header_type(response);
+	let text := _sparql_client_response_text(response);
+	if ( contains( content_type, "sparql-results+json" ) or
+		contains( content_type, "application/json" ) ) {
+		return _sparql_client_parse_json_results(text);
+	}
+	if ( contains( content_type, "sparql-results+xml" ) or
+		contains( content_type, "application/xml" ) or
+		contains( content_type, "text/xml" ) ) {
+		return _sparql_client_parse_xml_results(text);
+	}
+	if ( contains( content_type, "text/csv" ) ) {
+		return _sparql_client_parse_csv_results(text);
+	}
+	if ( contains( content_type, "tab-separated-values" ) ) {
+		return _sparql_client_parse_tsv_results(text);
+	}
+	if ( contains( content_type, "n-quads" ) or
+		contains( content_type, "n-triples" ) or
+		contains( content_type, "turtle" ) ) {
+		return _sparql_client_graph_result( query, text, content_type );
+	}
+	throw new SPARQLError(
+		message: "Unsupported SPARQL Protocol response type '" _
+			content_type _ "'",
+	);
+}
+
+function _sparql_client_update_summary ( String update ) {
+	let ast := sparql_parse_ast(update);
+	throw new SPARQLError(message: "SPARQL Update expected")
+		unless ast{type} eq "update";
+	return {
+		type: "update",
+		operations: ast{operations},
+		count: ast{operations}.length(),
+	};
+}
+
+class SPARQLProtocolClient {
+	let String endpoint with get := "";
+	let user_agent with get := null;
+	let default_graph_uri := null;
+	let named_graph_uri := null;
+	let Dict headers := {};
+
+	method __build__ () {
+		throw new SPARQLError(
+			message: "SPARQL Protocol endpoint must be HTTP or HTTPS",
+		) unless endpoint ~ /^https?:/;
+		if ( user_agent == null ) {
+			die "std/net/http UserAgent is unavailable in this runtime"
+				if _HTTPUserAgent == null;
+			user_agent := new _HTTPUserAgent();
+		}
+	}
+
+	method _request ( String body, String accept, Dict extra_headers ) {
+		let request := user_agent.build_request( "POST", endpoint );
+		request.header( "Accept", accept );
+		request.header(
+			"Content-Type",
+			"application/x-www-form-urlencoded; charset=utf-8",
+		);
+		for ( let key in headers.keys() ) {
+			request.header( key, headers.get(key) );
+		}
+		for ( let key in extra_headers.keys() ) {
+			request.header( key, extra_headers.get(key) );
+		}
+		request.body(body);
+		let response := user_agent.send(request);
+		response.expect_success();
+		return response;
+	}
+
+	method query ( String query, ... PairList options ) {
+		let opts := _sparql_client_pairs(options);
+		let values := { query: query };
+		values.set(
+			"default-graph-uri",
+			opts.get( "default_graph_uri", default_graph_uri ),
+		) if opts.exists("default_graph_uri") or default_graph_uri != null;
+		values.set(
+			"named-graph-uri",
+			opts.get( "named_graph_uri", named_graph_uri ),
+		) if opts.exists("named_graph_uri") or named_graph_uri != null;
+		let response := self._request(
+			_sparql_client_form(values),
+			"application/sparql-results+json, " _
+				"application/n-quads;q=0.9, " _
+				"application/n-triples;q=0.8, text/turtle;q=0.7, " _
+				"application/sparql-results+xml;q=0.6, " _
+				"text/tab-separated-values;q=0.5, text/csv;q=0.4",
+			opts.get( "headers", {} ),
+		);
+		return _sparql_client_parse_query_response( query, response );
+	}
+
+	method update ( String update, ... PairList options ) {
+		let opts := _sparql_client_pairs(options);
+		let values := { update: update };
+		values.set(
+			"using-graph-uri",
+			opts.get( "using_graph_uri", null ),
+		) if opts.exists("using_graph_uri");
+		values.set(
+			"using-named-graph-uri",
+			opts.get( "using_named_graph_uri", null ),
+		) if opts.exists("using_named_graph_uri");
+		self._request(
+			_sparql_client_form(values),
+			"text/plain",
+			opts.get( "headers", {} ),
+		);
+		return _sparql_client_update_summary(update);
+	}
+}
+
+function sparql_protocol_query (
+	String endpoint,
+	String query,
+	... PairList options
+) {
+	let opts := _sparql_client_pairs(options);
+	return ( new SPARQLProtocolClient(
+		endpoint: endpoint,
+		user_agent: opts.get( "user_agent", null ),
+		default_graph_uri: opts.get( "default_graph_uri", null ),
+		named_graph_uri: opts.get( "named_graph_uri", null ),
+		headers: opts.get( "headers", {} ),
+	) ).query(
+		query,
+		...options,
+	);
+}
+
+function sparql_protocol_update (
+	String endpoint,
+	String update,
+	... PairList options
+) {
+	let opts := _sparql_client_pairs(options);
+	return ( new SPARQLProtocolClient(
+		endpoint: endpoint,
+		user_agent: opts.get( "user_agent", null ),
+		headers: opts.get( "headers", {} ),
+	) ).update(
+		update,
+		...options,
+	);
+}

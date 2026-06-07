@@ -6,12 +6,74 @@ rdf - RDF, Linked Data, and SPARQL facade.
 
 =head1 SYNOPSIS
 
-  from rdf import RDFStore, RdfXmlParser, TurtleParser, sparql_query;
+  from rdf import
+      RDFStore,
+      RdfXmlParser,
+      SPARQLProtocolClient,
+      TurtleParser,
+      sparql_query;
+  from std/db import DB;
+
+  let store := new RDFStore(dbh: DB.temp());
+  store.install_schema();
+
+  (new TurtleParser()).parse_string("""
+  @prefix ex: <http://example.com/> .
+  ex:s ex:p "value" .
+  """, into: store);
+
+  let result := sparql_query(store, """
+  PREFIX ex: <http://example.com/>
+  SELECT ?o WHERE { ex:s ex:p ?o . }
+  """);
+
 
 =head1 DESCRIPTION
 
-This facade re-exports the core RDF term model, parser classes,
-serializer classes, store class, and SPARQL query entrypoint.
+This facade re-exports the RDF term model, graph utilities, parser and
+serializer classes, store classes, SPARQL query and update APIs, result
+serializers, vocabulary helpers, datatype helpers, and higher-level
+builder/resource convenience classes.
+
+=head1 EXPORTS
+
+=head2 Term Model
+
+Exports C<RDFIRI>, C<RDFBlank>, C<RDFLiteral>, C<RDFDefaultGraph>,
+C<RDFQuad>, C<RDFError>, C<RDFSyntaxError>, C<RDFStoreError>,
+C<SPARQLError>, C<RDF_NS>, C<XSD_NS>, C<DEFAULT_GRAPH_KEY>,
+C<rdf_iri>, C<rdf_blank>, C<rdf_literal>, C<rdf_default_graph>,
+C<rdf_quad>, C<rdf_term_kind>, C<rdf_term_key>, C<rdf_term_hash>, and
+C<rdf_term_equals>.
+
+=head2 Stores And Framework Helpers
+
+Exports C<RDFStore>, C<RDFSchemaStore>, C<RDFBlankNodeScope>,
+C<rdf_blank_scope>, C<RDFBuilder>, C<RDFResource>, C<RDFPrefixRegistry>,
+datatype helpers, graph/dataset helpers, and vocabulary helpers.
+
+=head2 Parsers And Serializers
+
+Exports C<NTriplesParser>, C<NQuadsParser>, C<TurtleParser>,
+C<RdfXmlParser>, C<NTriplesSerializer>, and C<NQuadsSerializer>.
+
+=head2 SPARQL
+
+Exports C<sparql_parse>, C<sparql_parse_query>, C<sparql_validate>,
+C<sparql_diagnose>, C<sparql_query>, C<sparql_update>,
+C<sparql_prepare_query>, C<sparql_prepare_update>,
+C<SPARQLPreparedQuery>, C<SPARQLPreparedUpdate>,
+C<SPARQLProtocolEndpoint>, C<SPARQLProtocolClient>,
+C<sparql_protocol_query>, C<sparql_protocol_update>, and SPARQL result
+serializer functions.
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
 
 =cut
 
@@ -38,10 +100,71 @@ from rdf/term import
 	rdf_term_key,
 	rdf_term_kind;
 from rdf/store import RDFStore;
+from rdf/schema import RDFSchemaStore;
+from rdf/bnode import RDFBlankNodeScope, rdf_blank_scope;
+from rdf/builder import RDFBuilder;
+from rdf/datatype import
+	rdf_literal_canonical,
+	rdf_literal_canonical_lexical,
+	rdf_literal_compare,
+	rdf_literal_numeric;
+from rdf/graph import
+	rdf_dataset_canonical_lines,
+	rdf_dataset_canonical_string,
+	rdf_datasets_isomorphic,
+	rdf_graph_isomorphic,
+	rdf_quad_key,
+	rdf_quads_intersection,
+	rdf_quads_minus,
+	rdf_quads_patch,
+	rdf_quads_sort,
+	rdf_quads_union,
+	rdf_quads_unique,
+	rdf_relabel_blank_nodes,
+	rdf_skolemize_blank_nodes,
+	rdf_stable_relabel_blank_nodes;
+from rdf/prefix import RDFPrefixRegistry;
 from rdf/parser/ntriples import NTriplesParser;
 from rdf/parser/nquads import NQuadsParser;
 from rdf/parser/turtle import TurtleParser;
 from rdf/parser/rdfxml import RdfXmlParser;
+from rdf/resource import RDFResource;
 from rdf/serializer/ntriples import NTriplesSerializer;
 from rdf/serializer/nquads import NQuadsSerializer;
-from rdf/sparql import sparql_parse, sparql_parse_query, sparql_query;
+from rdf/vocab import
+	owl,
+	owl_class,
+	owl_same_as,
+	owl_thing,
+	rdf,
+	rdf_type,
+	rdfs,
+	rdfs_class,
+	rdfs_domain,
+	rdfs_range,
+	rdfs_resource,
+	rdfs_subclass_of,
+	rdfs_subproperty_of,
+	xsd;
+from rdf/sparql import
+	SPARQLPreparedQuery,
+	SPARQLPreparedUpdate,
+	sparql_diagnose,
+	sparql_parse,
+	sparql_parse_query,
+	sparql_prepare_query,
+	sparql_prepare_update,
+	sparql_query,
+	sparql_update,
+	sparql_validate;
+from rdf/sparql/protocol import SPARQLProtocolEndpoint;
+from rdf/sparql/client import
+	SPARQLProtocolClient,
+	sparql_protocol_query,
+	sparql_protocol_update;
+from rdf/sparql/results import
+	sparql_results_csv,
+	sparql_results_json,
+	sparql_results_serialize,
+	sparql_results_tsv,
+	sparql_results_xml;

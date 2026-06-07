@@ -1,0 +1,228 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "fs" );
+
+from rdf import
+	RDFBlank,
+	NTriplesParser,
+	TurtleParser,
+	rdf_graph_isomorphic,
+	rdf_quad_key,
+	rdf_stable_relabel_blank_nodes,
+	rdf_term_key;
+from std/io import Path;
+from std/string import join, split, starts_with, trim;
+
+let root := new Path("tests/w3c/rdf/rdf11/rdf-turtle");
+let manifest_path := root.child("manifest.ttl");
+
+if ( not manifest_path.exists() ) {
+	pass("W3C RDF 1.1 Turtle manifest not vendored");
+	done_testing();
+}
+
+function _manifest_cases ( String text ) {
+	let cases := [];
+	let current := null;
+	for ( let line in split( text, "\n" ) ) {
+		let clean := trim(line);
+		next if clean eq "" or starts_with( clean, "#" );
+		if ( clean ~ /^<#([^>]+)>/ ) {
+			let m := clean ~ /^<#([^>]+)>/;
+			current := { id: m[1], kind: "", action: "", result: "" };
+			cases.push(current);
+		}
+		next if current == null;
+		if ( clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/ ) {
+			let m := clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/;
+			current{kind} := m[1];
+		}
+		if ( clean ~ /mf:action\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:action\s+<([^>]+)>/;
+			current{action} := m[1];
+		}
+		if ( clean ~ /mf:result\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:result\s+<([^>]+)>/;
+			current{result} := m[1];
+		}
+	}
+	return cases;
+}
+
+function _graph_keys ( Array quads ) {
+	return rdf_stable_relabel_blank_nodes(quads).map(
+		fn q -> rdf_quad_key(q),
+	).sort( fn ( a, b ) -> a cmp b );
+}
+
+function _sig_term_key ( term, Dict labels ) {
+	return "B|" _ labels.get(term.get_value(), "_")
+		if term instanceof RDFBlank;
+	return rdf_term_key(term);
+}
+
+function _blank_signature ( String label, Array quads, Dict labels ) {
+	let features := [];
+	for ( let quad in quads ) {
+		if ( quad.get_subject() instanceof RDFBlank and
+			quad.get_subject().get_value() eq label ) {
+			features.push(
+				"S|" _ _sig_term_key(quad.get_predicate(), labels) _ "|" _
+				_sig_term_key(quad.get_object(), labels) _ "|" _
+				_sig_term_key(quad.get_graph(), labels),
+			);
+		}
+		if ( quad.get_object() instanceof RDFBlank and
+			quad.get_object().get_value() eq label ) {
+			features.push(
+				"O|" _ _sig_term_key(quad.get_subject(), labels) _ "|" _
+				_sig_term_key(quad.get_predicate(), labels) _ "|" _
+				_sig_term_key(quad.get_graph(), labels),
+			);
+		}
+		if ( quad.get_graph() instanceof RDFBlank and
+			quad.get_graph().get_value() eq label ) {
+			features.push(
+				"G|" _ _sig_term_key(quad.get_subject(), labels) _ "|" _
+				_sig_term_key(quad.get_predicate(), labels) _ "|" _
+				_sig_term_key(quad.get_object(), labels),
+			);
+		}
+	}
+	return join( "\n", features.sort( fn ( a, b ) -> a cmp b ) );
+}
+
+function _canonical_labels ( Array quads ) {
+	let seen := {};
+	for ( let quad in quads ) {
+		for ( let term in quad.to_Array() ) {
+			seen.set( term.get_value(), true ) if term instanceof RDFBlank;
+		}
+	}
+	let labels := seen.keys().sort( fn ( a, b ) -> a cmp b );
+	let current := {};
+	for ( let label in labels ) {
+		current.set( label, "_" );
+	}
+	let round_num := 0;
+	while ( round_num < 16 ) {
+		let sigs := {};
+		for ( let label in labels ) {
+			sigs.set( label, _blank_signature( label, quads, current ) );
+		}
+		let ordered := labels.sort( function ( a, b ) {
+			let order := sigs.get(a) cmp sigs.get(b);
+			return order if order != 0;
+			return a cmp b;
+		});
+		let next_labels := {};
+		let i := 0;
+		for ( let label in ordered ) {
+			next_labels.set( label, "b" _ i );
+			i++;
+		}
+		let changed := false;
+		for ( let label in labels ) {
+			changed := true if current.get(label) ne next_labels.get(label);
+		}
+		current := next_labels;
+		last unless changed;
+		round_num++;
+	}
+	return current;
+}
+
+function _canonical_term_key ( term, Dict labels ) {
+	return "B|" _ labels.get(term.get_value()) if term instanceof RDFBlank;
+	return rdf_term_key(term);
+}
+
+function _canonical_graph_keys ( Array quads ) {
+	let labels := _canonical_labels(quads);
+	let lines := [];
+	for ( let quad in quads ) {
+		lines.push(
+			_canonical_term_key( quad.get_subject(), labels ) _ "\t" _
+			_canonical_term_key( quad.get_predicate(), labels ) _ "\t" _
+			_canonical_term_key( quad.get_object(), labels ) _ "\t" _
+			_canonical_term_key( quad.get_graph(), labels ),
+		);
+	}
+	return lines.sort( fn ( a, b ) -> a cmp b );
+}
+
+function _blank_count ( Array quads ) {
+	let seen := {};
+	for ( let quad in quads ) {
+		for ( let term in quad.to_Array() ) {
+			seen.set( term.get_value(), true ) if term instanceof RDFBlank;
+		}
+	}
+	return seen.keys().length();
+}
+
+function _graphs_match ( Array actual, Array expected ) {
+	if ( _blank_count(actual) <= 8 and _blank_count(expected) <= 8 ) {
+		return rdf_graph_isomorphic( actual, expected );
+	}
+	return _canonical_graph_keys(actual) == _canonical_graph_keys(expected);
+}
+
+let turtle_parser := new TurtleParser();
+let nt_parser := new NTriplesParser();
+let eval_count := 0;
+let positive_count := 0;
+let negative_count := 0;
+let negative_eval_count := 0;
+
+for ( let c in _manifest_cases(manifest_path.slurp_utf8()) ) {
+	next if c{action} eq "";
+	let action_path := root.child(c{action});
+	let base := "https://w3c.github.io/rdf-tests/rdf/rdf11/rdf-turtle/" _
+		c{action};
+	if ( c{kind} eq "TurtleEval" and c{result} ne "" ) {
+		eval_count++;
+		let actual := turtle_parser.parse_file( action_path, base: base );
+		let expected := nt_parser.parse_file(root.child(c{result}));
+		ok(
+			_graphs_match( actual, expected ),
+			"W3C Turtle eval " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "TurtlePositiveSyntax" ) {
+		positive_count++;
+		is(
+			exception( function () {
+				turtle_parser.parse_file( action_path, base: base );
+			} ),
+			null,
+			"W3C Turtle positive syntax " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "TurtleNegativeSyntax" ) {
+		negative_count++;
+		ok(
+			exception( function () {
+				turtle_parser.parse_file( action_path, base: base );
+			} ),
+			"W3C Turtle negative syntax " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "TurtleNegativeEval" ) {
+		negative_eval_count++;
+		ok(
+			exception( function () {
+				turtle_parser.parse_file( action_path, base: base );
+			} ),
+			"W3C Turtle negative eval " _ c{id},
+		);
+	}
+}
+
+ok( eval_count > 0, "W3C Turtle eval cases discovered" );
+ok( positive_count > 0, "W3C Turtle positive syntax cases discovered" );
+ok( negative_count > 0, "W3C Turtle negative syntax cases discovered" );
+ok( negative_eval_count > 0, "W3C Turtle negative eval cases discovered" );
+
+done_testing();

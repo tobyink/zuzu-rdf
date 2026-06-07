@@ -4,6 +4,167 @@
 
 rdf/store - std/db-backed RDF quad store.
 
+=head1 SYNOPSIS
+
+  from rdf/store import RDFStore;
+  from rdf/term import rdf_iri, rdf_literal, rdf_quad;
+  from std/db import DB;
+
+  let store := new RDFStore(dbh: DB.temp());
+  store.install_schema();
+  store.add_quad(rdf_quad(
+      rdf_iri("http://example.com/s"),
+      rdf_iri("http://example.com/p"),
+      rdf_literal("value"),
+  ));
+
+  let quads := store.find(rdf_iri("http://example.com/s"));
+
+
+=head1 DESCRIPTION
+
+C<RDFStore> stores RDF quads in relational tables managed through
+C<std/db>. Terms are interned, quads are indexed for lookup, and all graph
+operations use RDF term identity rather than object identity. The schema
+must be installed before use.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFStore>
+
+Construct with C<new RDFStore(dbh: dbh)> for SQLite or with an explicit
+C<backend> of C<sqlite>, C<mysql>, or C<postgresql>. C<prefix> controls
+the table name prefix and defaults to C<rdf_>.
+
+=over
+
+=item C<< install_schema() >>
+
+Creates the store tables and indexes if needed.
+
+=item C<< schema_version() >>
+
+Returns the installed schema version, or C<0> if the schema is absent.
+
+=item C<< verify_schema(Boolean strict := true) >>
+
+Checks that required schema objects exist. Throws on failure when
+C<strict> is true; otherwise returns false.
+
+=item C<< drop_schema() >>
+
+Drops the store tables for this prefix.
+
+=item C<< begin() >>, C<< commit() >>, C<< rollback() >>
+
+Transaction helpers delegated to the database handle.
+
+=item C<< with_transaction(Function todo) >>
+
+Runs C<todo> inside a transaction, committing on success and rolling back
+on exception.
+
+=item C<< add_term(term) >>
+
+Interns an RDF term and returns its database id.
+
+=item C<< term_for_key(String key) >>
+
+Returns the RDF term previously interned for C<key>, or C<null>.
+
+=item C<< add_quad(RDFQuad quad) >>, C<< add_quads(Array quads) >>
+
+Adds one or more quads. Duplicate quads are ignored by the store schema.
+
+=item C<< add_quads_bulk(Array quads) >>
+
+Adds many quads inside a transaction.
+
+=item C<< remove_quad(RDFQuad quad) >>, C<< remove_quads(Array quads) >>
+
+Removes one or more exact quads.
+
+=item C<< remove_match(subject := null, predicate := null, object := null, graph := null) >>
+
+Removes quads matching the supplied RDF term pattern. C<null> is a
+wildcard.
+
+=item C<< clear() >>
+
+Removes every quad.
+
+=item C<< clear_graph(graph := null) >>
+
+Removes quads in the supplied graph, or the default graph when omitted.
+
+=item C<< graph_names() >>
+
+Returns named graph terms present in the store.
+
+=item C<< graph_exists(graph := null) >>
+
+Returns whether the supplied graph has any quads.
+
+=item C<< copy_graph(source := null, target := null) >>
+
+Copies all quads from C<source> to C<target>.
+
+=item C<< add_graph(source := null, target := null) >>
+
+Adds quads from C<source> into C<target> without clearing C<target>.
+
+=item C<< move_graph(source := null, target := null) >>
+
+Copies then clears C<source>.
+
+=item C<< replace_graph(graph := null, Array quads := []) >>
+
+Clears C<graph> and inserts the supplied quads into it.
+
+=item C<< merge_store(RDFStore other) >>
+
+Adds all quads from another store.
+
+=item C<< count_quads() >>, C<< count_terms() >>
+
+Return store counts.
+
+=item C<< statistics() >>
+
+Returns a dictionary of store counts and graph information.
+
+=item C<< diagnostics() >>
+
+Returns schema and backend diagnostic information.
+
+=item C<< explain_find(subject := null, predicate := null, object := null, graph := null) >>
+
+Returns a description of the lookup path selected for a pattern.
+
+=item C<< explicit_find(subject := null, predicate := null, object := null, graph := null) >>
+
+Returns matching stored quads without entailment.
+
+=item C<< find(subject := null, predicate := null, object := null, graph := null) >>
+
+Returns matching quads. Subclasses may add inferred quads.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/store >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import
@@ -19,6 +180,7 @@ from rdf/term import
 	rdf_quad,
 	rdf_term_hash,
 	rdf_term_kind;
+from rdf/graph import rdf_quad_key;
 from std/db import DB;
 from std/string import join;
 
@@ -131,6 +293,34 @@ class RDFStore {
 		return self;
 	}
 
+	method begin () {
+		dbh.begin();
+		return self;
+	}
+
+	method commit () {
+		dbh.commit();
+		return self;
+	}
+
+	method rollback () {
+		dbh.rollback();
+		return self;
+	}
+
+	method with_transaction ( Function todo ) {
+		self.begin();
+		try {
+			let result := todo(self);
+			self.commit();
+			return result;
+		}
+		catch ( Exception e ) {
+			self.rollback();
+			throw e;
+		}
+	}
+
 	method add_term ( term ) {
 		let key := rdf_term_hash(term);
 		let q := dbh.prepare(
@@ -205,6 +395,13 @@ class RDFStore {
 		return self;
 	}
 
+	method add_quads_bulk ( Array quads ) {
+		return self.with_transaction(function ( store ) {
+			store.add_quads(quads);
+			return store;
+		});
+	}
+
 	method remove_quad ( RDFQuad quad ) {
 		dbh.prepare(
 			"delete from " _ self._table("quads") _
@@ -218,7 +415,172 @@ class RDFStore {
 		return self;
 	}
 
-	method find ( subject := null, predicate := null, object := null,
+	method remove_quads ( Array quads ) {
+		for ( let quad in quads ) {
+			self.remove_quad(quad);
+		}
+		return self;
+	}
+
+	method remove_match ( subject := null, predicate := null,
+		object := null, graph := null ) {
+		return self.remove_quads(self.find( subject, predicate, object, graph ));
+	}
+
+	method clear () {
+		dbh.prepare( "delete from " _ self._table("quads") ).execute();
+		return self;
+	}
+
+	method clear_graph ( graph := null ) {
+		let g := graph == null ? rdf_default_graph() : graph;
+		dbh.prepare(
+			"delete from " _ self._table("quads") _ " where g = ?",
+		).execute(rdf_term_hash(g));
+		return self;
+	}
+
+	method graph_names () {
+		let q := dbh.prepare(
+			"select distinct g from " _ self._table("quads") _
+			" where g <> ? order by g",
+		);
+		q.execute(rdf_term_hash(rdf_default_graph()));
+		let out := [];
+		for ( let row in q.all_array() ) {
+			out.push(self.term_for_key(row[0]));
+		}
+		return out;
+	}
+
+	method graph_exists ( graph := null ) {
+		let g := graph == null ? rdf_default_graph() : graph;
+		let q := dbh.prepare(
+			"select g from " _ self._table("quads") _
+			" where g = ? limit 1",
+		);
+		q.execute(rdf_term_hash(g));
+		return q.next_array() != null;
+	}
+
+	method copy_graph ( source := null, target := null ) {
+		let from_graph := source == null ? rdf_default_graph() : source;
+		let to_graph := target == null ? rdf_default_graph() : target;
+		let source_quads := self.find( null, null, null, from_graph );
+		self.clear_graph(to_graph);
+		for ( let quad in source_quads ) {
+			self.add_quad(rdf_quad(
+				quad.get_subject(),
+				quad.get_predicate(),
+				quad.get_object(),
+				to_graph,
+			));
+		}
+		return self;
+	}
+
+	method add_graph ( source := null, target := null ) {
+		let from_graph := source == null ? rdf_default_graph() : source;
+		let to_graph := target == null ? rdf_default_graph() : target;
+		for ( let quad in self.find( null, null, null, from_graph ) ) {
+			self.add_quad(rdf_quad(
+				quad.get_subject(),
+				quad.get_predicate(),
+				quad.get_object(),
+				to_graph,
+			));
+		}
+		return self;
+	}
+
+	method move_graph ( source := null, target := null ) {
+		let from_graph := source == null ? rdf_default_graph() : source;
+		let to_graph := target == null ? rdf_default_graph() : target;
+		self.copy_graph( from_graph, to_graph );
+		self.clear_graph(from_graph)
+			unless rdf_term_hash(from_graph) eq rdf_term_hash(to_graph);
+		return self;
+	}
+
+	method replace_graph ( graph := null, Array quads := [] ) {
+		let g := graph == null ? rdf_default_graph() : graph;
+		self.clear_graph(g);
+		for ( let quad in quads ) {
+			self.add_quad(rdf_quad(
+				quad.get_subject(),
+				quad.get_predicate(),
+				quad.get_object(),
+				g,
+			));
+		}
+		return self;
+	}
+
+	method merge_store ( RDFStore other ) {
+		return self.add_quads_bulk(other.find());
+	}
+
+	method count_quads () {
+		let q := dbh.prepare(
+			"select count(*) from " _ self._table("quads"),
+		);
+		q.execute();
+		return 0 + q.next_array()[0];
+	}
+
+	method count_terms () {
+		let q := dbh.prepare(
+			"select count(*) from " _ self._table("terms"),
+		);
+		q.execute();
+		return 0 + q.next_array()[0];
+	}
+
+	method statistics () {
+		return {
+			backend: backend,
+			prefix: prefix,
+			schema_version: self.schema_version(),
+			quad_count: self.count_quads(),
+			term_count: self.count_terms(),
+			graph_count: self.graph_names().length(),
+		};
+	}
+
+	method diagnostics () {
+		let stats := self.statistics();
+		stats{schema_ok} := self.verify_schema(false);
+		stats{indexes} := [
+			prefix _ "quads_pog",
+			prefix _ "quads_sp",
+			prefix _ "quads_gsp",
+		];
+		return stats;
+	}
+
+	method explain_find ( subject := null, predicate := null,
+		object := null, graph := null ) {
+		let index := "primary";
+		if ( graph != null and subject != null and predicate != null ) {
+			index := prefix _ "quads_gsp";
+		}
+		else if ( predicate != null and object != null ) {
+			index := prefix _ "quads_pog";
+		}
+		else if ( subject != null and predicate != null ) {
+			index := prefix _ "quads_sp";
+		}
+		return {
+			backend: backend,
+			index: index,
+			subject_bound: subject != null,
+			predicate_bound: predicate != null,
+			object_bound: object != null,
+			graph_bound: graph != null,
+		};
+	}
+
+	method explicit_find ( subject := null, predicate := null, object := null,
 	graph := null ) {
 		let clauses := [];
 		let binds := [];
@@ -268,5 +630,10 @@ class RDFStore {
 			));
 		}
 		return out;
+	}
+
+	method find ( subject := null, predicate := null, object := null,
+	graph := null ) {
+		return self.explicit_find( subject, predicate, object, graph );
 	}
 }

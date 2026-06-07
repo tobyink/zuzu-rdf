@@ -1,0 +1,114 @@
+from test/more import *;
+
+requires_capability( "db" );
+
+from rdf import
+	RDFBuilder,
+	RDFPrefixRegistry,
+	RDFResource,
+	RDFStore,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_type;
+from std/db import DB;
+
+let ex := "http://example.com/";
+
+let prefixes := new RDFPrefixRegistry();
+prefixes.set( "ex", ex );
+is(
+	prefixes.expand("ex:thing").get_value(),
+	ex _ "thing",
+	"RDFPrefixRegistry expands prefixed names",
+);
+is(
+	prefixes.compact(rdf_iri(ex _ "thing")),
+	"ex:thing",
+	"RDFPrefixRegistry compacts IRIs using longest known namespace",
+);
+
+let builder := new RDFBuilder();
+builder
+	.prefix( "ex", ex )
+	.triple( "ex:alice", rdf_type(), "ex:Person" )
+	.triple( "ex:alice", "ex:name", builder.literal("Alice") )
+	.in_graph( "ex:g", function ( b ) {
+		b.triple( "ex:alice", "ex:name", b.literal("Named graph Alice") );
+	} );
+
+let dbh := DB.temp();
+let store := new RDFStore(dbh: dbh);
+store.install_schema();
+builder.add_to(store);
+
+is(
+	store.find(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "name"),
+		rdf_literal("Alice"),
+	).length(),
+	1,
+	"RDFBuilder adds default graph triples to stores",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "name"),
+		rdf_literal("Named graph Alice"),
+		rdf_iri(ex _ "g"),
+	).length(),
+	1,
+	"RDFBuilder supports scoped named graph construction",
+);
+
+let resource := new RDFResource(store: store, term: rdf_iri(ex _ "alice"));
+is(
+	resource.value(rdf_iri(ex _ "name"), null, rdf_default_graph()).get_value(),
+	"Alice",
+	"RDFResource reads property values from its store",
+);
+resource.add( rdf_iri(ex _ "knows"), rdf_iri(ex _ "bob") );
+is(
+	resource.values(rdf_iri(ex _ "knows"))[0].get_value(),
+	ex _ "bob",
+	"RDFResource writes property values to its store",
+);
+ok(
+	resource.has_type(rdf_iri(ex _ "Person")),
+	"RDFResource type helper reads rdf:type values",
+);
+
+let second := new RDFStore(dbh: dbh);
+second.install_schema();
+is(
+	second.find(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "knows"),
+		rdf_iri(ex _ "bob"),
+	).length(),
+	1,
+	"Second store sharing the same DB handle observes committed writes",
+);
+
+store.begin();
+store.add_quad(
+	rdf_quad(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "knows"),
+		rdf_iri(ex _ "charlie"),
+	),
+);
+store.rollback();
+is(
+	second.find(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "knows"),
+		rdf_iri(ex _ "charlie"),
+	).length(),
+	0,
+	"Rolled-back transaction writes are not visible through another store",
+);
+
+done_testing();

@@ -4,6 +4,56 @@
 
 rdf/serializer/nquads - N-Quads serializer.
 
+=head1 SYNOPSIS
+
+  from rdf/serializer/nquads import NQuadsSerializer;
+
+  let text := (new NQuadsSerializer()).serialize(quads);
+
+
+=head1 DESCRIPTION
+
+C<NQuadsSerializer> serializes RDF quads as RDF 1.1 N-Quads. Quads in the
+default graph are emitted as three-term statements; named graph quads
+include a fourth graph term. Term escaping and validation are shared with
+the N-Triples serializer.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<NQuadsSerializer>
+
+=over
+
+=item C<< line(quad) >>
+
+Returns one N-Quads statement without a trailing newline.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Calls C<emit> once per serialized line, including the trailing newline.
+Returns the serializer.
+
+=item C<< serialize(Array quads) >>
+
+Returns the complete serialized string, ending with a newline when there
+is at least one quad.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/nquads >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/serializer/ntriples import _nt_term;
@@ -11,16 +61,27 @@ from rdf/term import RDFDefaultGraph;
 from std/string import join;
 
 class NQuadsSerializer {
+	method line ( quad ) {
+		let line := _nt_term(quad.get_subject()) _ " " _
+			_nt_term(quad.get_predicate()) _ " " _
+			_nt_term(quad.get_object());
+		if ( not( quad.get_graph() instanceof RDFDefaultGraph ) ) {
+			line _= " " _ _nt_term(quad.get_graph());
+		}
+		return line _ " .";
+	}
+
+	method serialize_each ( Array quads, Function emit ) {
+		for ( let quad in quads ) {
+			emit(self.line(quad) _ "\n");
+		}
+		return self;
+	}
+
 	method serialize ( Array quads ) {
 		let lines := [];
 		for ( let quad in quads ) {
-			let line := _nt_term(quad.get_subject()) _ " " _
-				_nt_term(quad.get_predicate()) _ " " _
-				_nt_term(quad.get_object());
-			if ( not( quad.get_graph() instanceof RDFDefaultGraph ) ) {
-				line _= " " _ _nt_term(quad.get_graph());
-			}
-			lines.push(line _ " .");
+			lines.push(self.line(quad));
 		}
 		return join( "\n", lines ) _ ( lines.length() > 0 ? "\n" : "" );
 	}

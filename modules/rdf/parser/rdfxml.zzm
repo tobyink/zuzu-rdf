@@ -4,6 +4,71 @@
 
 rdf/parser/rdfxml - RDF/XML parser.
 
+=head1 SYNOPSIS
+
+  from rdf/parser/rdfxml import RdfXmlParser;
+
+  let parser := new RdfXmlParser();
+  let quads := parser.parse_file(path, base: "http://example.com/doc");
+
+
+=head1 DESCRIPTION
+
+C<RdfXmlParser> parses RDF/XML into RDF quads. It supports RDF 1.1
+RDF/XML forms including typed node elements, C<xml:base>, C<xml:lang>,
+C<rdf:ID>, C<rdf:nodeID>, property attributes, C<parseType> resource,
+collection, and XML literal values, RDF lists, C<rdf:li>, and
+reification.
+
+Parser options are C<base>, used for URI resolution, and C<into>, used to
+load parsed quads directly into a store.
+
+=head1 EXPORTS
+
+=head2 Constants
+
+=over
+
+=item C<XML_NS>
+
+The XML namespace IRI.
+
+=item C<XMLNS_NS>
+
+The XML namespace declaration namespace IRI.
+
+=back
+
+=head2 Classes
+
+=over
+
+=item C<RdfXmlParser>
+
+=over
+
+=item C<< parse_string(String text, ... options) >>
+
+Parses UTF-8 RDF/XML text. Returns an array of quads, or the supplied
+C<into> store after adding the quads. Throws C<RDFSyntaxError> on invalid
+RDF/XML.
+
+=item C<< parse_file(path, ... options) >>
+
+Reads UTF-8 from C<path> and parses it.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/parser/rdfxml >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/parser/common import _parser_options, _parser_result;

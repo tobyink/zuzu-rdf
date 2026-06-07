@@ -1,0 +1,120 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/resource - Lightweight RDF resource wrappers.
+
+=head1 SYNOPSIS
+
+  from rdf/resource import RDFResource;
+  from rdf/term import rdf_iri, rdf_literal;
+
+  let alice := new RDFResource(
+      store: store,
+      term: rdf_iri("http://example.com/alice"),
+  );
+  alice.add(rdf_iri("http://example.com/name"), rdf_literal("Alice"));
+
+
+=head1 DESCRIPTION
+
+C<RDFResource> wraps a subject term and store to make common resource
+operations concise. It does not cache results; every read calls the
+underlying store.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFResource>
+
+Construct with C<store> and C<term>.
+
+=over
+
+=item C<< values(predicate, graph := null) >>
+
+Returns all objects for the resource and predicate.
+
+=item C<< value(predicate, fallback := null, graph := null) >>
+
+Returns the first matching object, or C<fallback>.
+
+=item C<< add(predicate, object, graph := null) >>
+
+Adds one quad using the wrapped term as subject and returns the resource.
+
+=item C<< remove(predicate := null, object := null, graph := null) >>
+
+Removes matching quads for the wrapped subject and returns the resource.
+
+=item C<< types(graph := null) >>
+
+Returns objects of C<rdf:type> statements for the resource.
+
+=item C<< has_type(type, graph := null) >>
+
+Returns true if the resource has the supplied C<rdf:type>.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/resource >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/store import RDFStore;
+from rdf/term import
+	RDFBlank,
+	RDFIRI,
+	RDFLiteral,
+	rdf_quad;
+from rdf/vocab import rdf_type;
+
+class RDFResource {
+	let RDFStore store with get := null;
+	let term with get := null;
+
+	method values ( predicate, graph := null ) {
+		let out := [];
+		for ( let quad in store.find( term, predicate, null, graph ) ) {
+			out.push(quad.get_object());
+		}
+		return out;
+	}
+
+	method value ( predicate, fallback := null, graph := null ) {
+		let values := self.values( predicate, graph );
+		return values.length() == 0 ? fallback : values[0];
+	}
+
+	method add ( predicate, object, graph := null ) {
+		store.add_quad(rdf_quad( term, predicate, object, graph ));
+		return self;
+	}
+
+	method remove ( predicate := null, object := null, graph := null ) {
+		store.remove_match( term, predicate, object, graph );
+		return self;
+	}
+
+	method types ( graph := null ) {
+		return self.values( rdf_type(), graph );
+	}
+
+	method has_type ( type, graph := null ) {
+		for ( let item in self.types(graph) ) {
+			return true if item.to_String() eq type.to_String();
+		}
+		return false;
+	}
+}

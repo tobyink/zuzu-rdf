@@ -1,0 +1,362 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/graph - RDF graph and dataset utility functions.
+
+=head1 SYNOPSIS
+
+  from rdf/graph import rdf_graph_isomorphic, rdf_quads_union;
+
+  let combined := rdf_quads_union(left, right);
+  ok(rdf_graph_isomorphic(actual, expected));
+
+
+=head1 DESCRIPTION
+
+This module provides helpers for sorting, deduplicating, comparing, and
+rewriting arrays of RDF quads. Dataset helpers consider graph terms;
+graph helpers compare only default-graph quads.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< rdf_quad_key(RDFQuad quad) >>
+
+Returns a stable key for a quad.
+
+=item C<< rdf_quads_sort(Array quads) >>
+
+Returns quads sorted by C<rdf_quad_key>.
+
+=item C<< rdf_quads_unique(Array quads) >>
+
+Returns sorted quads with duplicates removed.
+
+=item C<< rdf_quads_union(Array left, Array right) >>
+
+Returns the set union of two quad arrays.
+
+=item C<< rdf_quads_minus(Array left, Array right) >>
+
+Returns quads from C<left> that are not in C<right>.
+
+=item C<< rdf_quads_intersection(Array left, Array right) >>
+
+Returns quads present in both arrays.
+
+=item C<< rdf_quads_patch(Array quads, Array remove, Array add) >>
+
+Applies a remove/add patch and returns the resulting unique quads.
+
+=item C<< rdf_dataset_canonical_lines(Array quads) >>
+
+Returns canonical string lines for a dataset, including blank node
+renaming.
+
+=item C<< rdf_dataset_canonical_string(Array quads) >>
+
+Returns the canonical dataset string.
+
+=item C<< rdf_datasets_isomorphic(Array left, Array right) >>
+
+Returns true when two datasets are isomorphic.
+
+=item C<< rdf_graph_isomorphic(Array left, Array right) >>
+
+Returns true when the default graphs in two quad arrays are isomorphic.
+
+=item C<< rdf_relabel_blank_nodes(Array quads, Dict labels) >>
+
+Returns quads with blank node labels replaced according to C<labels>.
+
+=item C<< rdf_stable_relabel_blank_nodes(Array quads, String prefix := "b") >>
+
+Relabels blank nodes deterministically by their original labels.
+
+=item C<< rdf_skolemize_blank_nodes(Array quads, String base := "urn:zuzu:rdf:skolem:") >>
+
+Replaces blank nodes with IRI terms under C<base>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/graph >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/term import
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFLiteral,
+	RDFQuad,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	rdf_term_key;
+from std/string import join;
+
+function _relabel_term;
+function _skolem_term;
+
+function rdf_quad_key ( RDFQuad quad ) {
+	return rdf_term_key(quad.get_subject()) _ "\t" _
+		rdf_term_key(quad.get_predicate()) _ "\t" _
+		rdf_term_key(quad.get_object()) _ "\t" _
+		rdf_term_key(quad.get_graph());
+}
+
+function rdf_quads_sort ( Array quads ) {
+	return quads.sort( function ( left, right ) {
+		return rdf_quad_key(left) cmp rdf_quad_key(right);
+	});
+}
+
+function rdf_quads_unique ( Array quads ) {
+	let seen := {};
+	let out := [];
+	for ( let quad in rdf_quads_sort(quads) ) {
+		let key := rdf_quad_key(quad);
+		next if seen.exists(key);
+		seen.set( key, true );
+		out.push(quad);
+	}
+	return out;
+}
+
+function rdf_quads_union ( Array left, Array right ) {
+	let all := [];
+	for ( let quad in left ) {
+		all.push(quad);
+	}
+	for ( let quad in right ) {
+		all.push(quad);
+	}
+	return rdf_quads_unique(all);
+}
+
+function rdf_quads_minus ( Array left, Array right ) {
+	let remove := {};
+	for ( let quad in right ) {
+		remove.set( rdf_quad_key(quad), true );
+	}
+	let out := [];
+	for ( let quad in left ) {
+		out.push(quad) unless remove.exists(rdf_quad_key(quad));
+	}
+	return rdf_quads_sort(out);
+}
+
+function rdf_quads_intersection ( Array left, Array right ) {
+	let keep := {};
+	for ( let quad in right ) {
+		keep.set( rdf_quad_key(quad), true );
+	}
+	let out := [];
+	for ( let quad in left ) {
+		out.push(quad) if keep.exists(rdf_quad_key(quad));
+	}
+	return rdf_quads_unique(out);
+}
+
+function rdf_quads_patch ( Array quads, Array remove, Array add ) {
+	return rdf_quads_union( rdf_quads_minus( quads, remove ), add );
+}
+
+function _graph_add_blank ( term, Dict seen, Array labels ) {
+	if ( term instanceof RDFBlank and not seen.exists(term.get_value()) ) {
+		seen.set( term.get_value(), true );
+		labels.push(term.get_value());
+	}
+}
+
+function _graph_blank_labels ( Array quads ) {
+	let seen := {};
+	let labels := [];
+	for ( let quad in quads ) {
+		_graph_add_blank( quad.get_subject(), seen, labels );
+		_graph_add_blank( quad.get_object(), seen, labels );
+		_graph_add_blank( quad.get_graph(), seen, labels );
+	}
+	return labels.sort( fn ( a, b ) -> a cmp b );
+}
+
+function _graph_term_canonical_key ( term, Dict bnodes ) {
+	if ( term instanceof RDFBlank ) {
+		return "B|_:" _ bnodes.get(term.get_value(), term.get_value());
+	}
+	return rdf_term_key(term);
+}
+
+function _graph_canonical_lines_with_mapping ( Array quads, Dict bnodes ) {
+	let lines := [];
+	for ( let quad in quads ) {
+		lines.push(
+			_graph_term_canonical_key( quad.get_subject(), bnodes ) _ "\t" _
+			_graph_term_canonical_key( quad.get_predicate(), bnodes ) _ "\t" _
+			_graph_term_canonical_key( quad.get_object(), bnodes ) _ "\t" _
+			_graph_term_canonical_key( quad.get_graph(), bnodes ),
+		);
+	}
+	return lines.sort( fn ( a, b ) -> a cmp b );
+}
+
+function _graph_permute (
+	Array labels,
+	Array used,
+	Array current,
+	Array out
+) {
+	if ( current.length() == labels.length() ) {
+		let item := [];
+		for ( let value in current ) {
+			item.push(value);
+		}
+		out.push(item);
+		return null;
+	}
+	let i := 0;
+	while ( i < labels.length() ) {
+		if ( not used[i] ) {
+			used[i] := true;
+			current.push(labels[i]);
+			_graph_permute( labels, used, current, out );
+			current.pop();
+			used[i] := false;
+		}
+		i++;
+	}
+}
+
+function _graph_permutations ( Array labels ) {
+	let used := [];
+	let i := 0;
+	while ( i < labels.length() ) {
+		used.push(false);
+		i++;
+	}
+	let out := [];
+	_graph_permute( labels, used, [], out );
+	return out;
+}
+
+function _graph_mapping ( Array labels, Array ordering ) {
+	let map := {};
+	let i := 0;
+	while ( i < labels.length() ) {
+		map.set( ordering[i], "b" _ i );
+		i++;
+	}
+	return map;
+}
+
+function rdf_dataset_canonical_lines ( Array quads ) {
+	let labels := _graph_blank_labels(quads);
+	if ( labels.length() == 0 ) {
+		return _graph_canonical_lines_with_mapping( quads, {} );
+	}
+	let best := null;
+	for ( let ordering in _graph_permutations(labels) ) {
+		let lines := _graph_canonical_lines_with_mapping(
+			quads,
+			_graph_mapping( labels, ordering ),
+		);
+		let key := join( "\n", lines );
+		if ( best == null or key lt best{key} ) {
+			best := { key: key, lines: lines };
+		}
+	}
+	return best{lines};
+}
+
+function rdf_dataset_canonical_string ( Array quads ) {
+	return join( "\n", rdf_dataset_canonical_lines(quads) );
+}
+
+function rdf_datasets_isomorphic ( Array left, Array right ) {
+	return false unless left.length() == right.length();
+	return rdf_dataset_canonical_string(left) eq
+		rdf_dataset_canonical_string(right);
+}
+
+function rdf_graph_isomorphic ( Array left, Array right ) {
+	let left_default := [];
+	let right_default := [];
+	for ( let quad in left ) {
+		left_default.push(quad)
+			if quad.get_graph() instanceof RDFDefaultGraph;
+	}
+	for ( let quad in right ) {
+		right_default.push(quad)
+			if quad.get_graph() instanceof RDFDefaultGraph;
+	}
+	return rdf_datasets_isomorphic( left_default, right_default );
+}
+
+function rdf_relabel_blank_nodes ( Array quads, Dict labels ) {
+	let out := [];
+	for ( let quad in quads ) {
+		out.push(rdf_quad(
+			_relabel_term( quad.get_subject(), labels ),
+			_relabel_term( quad.get_predicate(), labels ),
+			_relabel_term( quad.get_object(), labels ),
+			_relabel_term( quad.get_graph(), labels ),
+		));
+	}
+	return out;
+}
+
+function _relabel_term ( term, Dict labels ) {
+	if ( term instanceof RDFBlank and labels.exists(term.get_value()) ) {
+		return rdf_blank(labels.get(term.get_value()));
+	}
+	return term;
+}
+
+function rdf_stable_relabel_blank_nodes ( Array quads, String prefix := "b" ) {
+	let labels := _graph_blank_labels(quads);
+	let map := {};
+	let i := 0;
+	for ( let label in labels ) {
+		map.set( label, prefix _ i );
+		i++;
+	}
+	return rdf_relabel_blank_nodes( quads, map );
+}
+
+function rdf_skolemize_blank_nodes (
+	Array quads,
+	String base := "urn:zuzu:rdf:skolem:"
+) {
+	let labels := _graph_blank_labels(quads);
+	let map := {};
+	for ( let label in labels ) {
+		map.set( label, rdf_iri(base _ label) );
+	}
+	let out := [];
+	for ( let quad in quads ) {
+		out.push(rdf_quad(
+			_skolem_term( quad.get_subject(), map ),
+			_skolem_term( quad.get_predicate(), map ),
+			_skolem_term( quad.get_object(), map ),
+			_skolem_term( quad.get_graph(), map ),
+		));
+	}
+	return out;
+}
+
+function _skolem_term ( term, Dict map ) {
+	return map.get(term.get_value()) if term instanceof RDFBlank and
+		map.exists(term.get_value());
+	return term;
+}

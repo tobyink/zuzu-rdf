@@ -1,0 +1,199 @@
+from test/more import *;
+
+requires_capability( "db" );
+
+from rdf import
+	RDFStore,
+	SPARQLProtocolEndpoint,
+	XSD_NS,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad,
+	sparql_diagnose,
+	sparql_prepare_query,
+	sparql_prepare_update,
+	sparql_query,
+	sparql_update,
+	sparql_validate;
+from std/db import DB;
+
+let ex := "http://example.com/";
+let store := new RDFStore(dbh: DB.temp());
+store.install_schema();
+
+let insert_result := sparql_update(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+INSERT DATA {
+	ex:s ex:p "old" .
+	GRAPH ex:g { ex:s ex:p "named" . }
+}
+""",
+);
+is( insert_result{count}, 1, "SPARQL Update reports one operation" );
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		null,
+		rdf_default_graph(),
+	).length(),
+	1,
+	"INSERT DATA adds default graph quad",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		null,
+		rdf_iri(ex _ "g"),
+	).length(),
+	1,
+	"INSERT DATA adds named graph quad",
+);
+
+sparql_update(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+DELETE { ?s ex:p "old" }
+INSERT { ?s ex:p "new" }
+WHERE  { ?s ex:p "old" }
+""",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		rdf_literal("old"),
+	).length(),
+	0,
+	"DELETE/INSERT removes matched template quads",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		rdf_literal("new"),
+	).length(),
+	1,
+	"DELETE/INSERT adds constructed template quads",
+);
+
+sparql_update(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+INSERT DATA { ex:tmp ex:p 7 . };
+DELETE WHERE { ex:tmp ex:p ?v . }
+""",
+);
+is(
+	store.find( rdf_iri(ex _ "tmp"), rdf_iri(ex _ "p") ).length(),
+	0,
+	"Multiple update operations and DELETE WHERE execute in order",
+);
+
+sparql_update(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+COPY GRAPH ex:g TO GRAPH ex:g2;
+ADD GRAPH ex:g2 TO DEFAULT;
+MOVE GRAPH ex:g2 TO GRAPH ex:g3
+""",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		null,
+		rdf_iri(ex _ "g3"),
+	).length(),
+	1,
+	"COPY/ADD/MOVE graph management operations execute",
+);
+
+sparql_update(
+	store,
+	"""
+PREFIX ex: <http://example.com/>
+WITH ex:g
+DELETE { ?s ex:p "named" }
+INSERT { ?s ex:p "changed" }
+WHERE  { ?s ex:p "named" }
+""",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "s"),
+		rdf_iri(ex _ "p"),
+		rdf_literal("changed"),
+		rdf_iri(ex _ "g"),
+	).length(),
+	1,
+	"WITH supplies the default graph for update templates and WHERE",
+);
+
+let prepared_update := sparql_prepare_update("""
+PREFIX ex: <http://example.com/>
+INSERT DATA { ex:prepared ex:p "ok" . }
+""");
+prepared_update.execute(store);
+let prepared_query := sparql_prepare_query("""
+PREFIX ex: <http://example.com/>
+ASK { ex:prepared ex:p "ok" . }
+""");
+is(
+	prepared_query.execute(store){boolean},
+	true,
+	"Prepared update and query APIs execute",
+);
+
+ok( sparql_validate("ASK {}"){ok}, "sparql_validate reports valid query" );
+ok(
+	not sparql_validate("SELECT WHERE {"){ok},
+	"sparql_validate reports syntax errors",
+);
+is(
+	sparql_diagnose( store, "ASK {}" ){result}{boolean},
+	true,
+	"sparql_diagnose can execute valid query text",
+);
+
+let endpoint := new SPARQLProtocolEndpoint(store: store);
+let query_response := endpoint.handle({
+	query: """
+PREFIX ex: <http://example.com/>
+ASK { ex:prepared ex:p "ok" . }
+""",
+	accept: "application/sparql-results+json",
+});
+is( query_response{status}, 200, "Protocol query returns HTTP success status" );
+like(
+	query_response{body},
+	/"boolean":true/,
+	"Protocol query serializes SPARQL JSON results",
+);
+
+let update_response := endpoint.handle({
+	content_type: "application/x-www-form-urlencoded",
+	body: "update=PREFIX+ex%3A+%3Chttp%3A%2F%2Fexample.com%2F%3E+INSERT+DATA+%7B+ex%3Aprotocol+ex%3Ap+%22ok%22+.+%7D",
+});
+is( update_response{status}, 204, "Protocol update returns HTTP no-content status" );
+is(
+	store.find(
+		rdf_iri(ex _ "protocol"),
+		rdf_iri(ex _ "p"),
+		rdf_literal("ok"),
+	).length(),
+	1,
+	"Protocol form update mutates the store",
+);
+
+let bad_response := endpoint.handle({ query: "ASK {}", update: "CLEAR ALL" });
+is( bad_response{status}, 400, "Protocol rejects mixed query/update request" );
+
+done_testing();

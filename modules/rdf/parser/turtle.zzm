@@ -4,9 +4,70 @@
 
 rdf/parser/turtle - Turtle parser.
 
+=head1 SYNOPSIS
+
+  from rdf/parser/turtle import TurtleParser;
+
+  let parser := new TurtleParser();
+  let quads := parser.parse_string("""
+  @prefix ex: <http://example.com/> .
+  ex:s ex:p "value" .
+  """);
+
+
+=head1 DESCRIPTION
+
+C<TurtleParser> parses RDF 1.1 Turtle into default-graph quads. It
+supports Turtle directives, SPARQL-style C<PREFIX> and C<BASE>, relative
+IRI resolution, blank node property lists, collections, object lists,
+language tags, datatypes, numerics, booleans, and single, double, and
+long string forms.
+
+Parser options are C<base>, used to resolve relative IRIs, and C<into>,
+used to load parsed quads directly into a store.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<TurtleParser>
+
+=over
+
+=item C<< parse_string(String text, ... options) >>
+
+Parses C<text>. Returns an array of quads, or the supplied C<into> store
+after adding the quads. Throws C<RDFSyntaxError> on invalid input.
+
+=item C<< parse_file(path, ... options) >>
+
+Reads UTF-8 from C<path> and parses it.
+
+=item C<< parse_lines(Array lines, ... options) >>
+
+Parses concatenated line chunks.
+
+=item C<< parse_chunks(Array chunks, ... options) >>
+
+Parses concatenated string or nested-array chunks.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/parser/turtle >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
-from rdf/parser/common import RDFReader, _parser_result;
+from rdf/parser/common import RDFReader, _parser_options, _parser_result;
 from rdf/term import RDF_NS, RDFIRI, rdf_iri, rdf_quad;
 from std/string import ends_with, substr;
 
@@ -15,29 +76,65 @@ function _turtle_collection;
 function _turtle_object;
 function _turtle_predicate_object_list;
 
+function _rdf_concat_chunks ( Array chunks ) {
+	let text := "";
+	for ( let chunk in chunks ) {
+		if ( chunk instanceof Array ) {
+			text _= _rdf_concat_chunks(chunk);
+		}
+		else {
+			text _= chunk;
+		}
+	}
+	return text;
+}
+
 function _turtle_directive ( RDFReader reader ) {
 	reader._skip_ws();
-	if ( reader._starts("@prefix") or reader._starts("PREFIX") ) {
-		reader.advance( reader._starts("@prefix") ? 7 : 6 );
-		let name := reader.read_name();
-		name := substr( name, 0, length name - 1 ) if ends_with( name, ":" );
+	if ( reader._starts("@prefix") or reader._starts_ci("PREFIX") ) {
+		let sparql_style := reader._starts_ci("PREFIX");
+		reader.advance( sparql_style ? 6 : 7 );
+		reader._skip_ws();
+		let name := reader._read_prefix_part();
+		reader._expect(":");
 		let iri := reader.read_iri();
 		reader.get_prefixes().set( name, iri.get_value() );
 		reader._skip_ws();
-		reader._expect(".") if reader._peek() eq ".";
+		if ( sparql_style ) {
+			reader._error("Unexpected directive terminator")
+				if reader._peek() eq ".";
+		}
+		else {
+			reader._expect(".");
+		}
 		return true;
 	}
-	if ( reader._starts("@base") or reader._starts("BASE") ) {
-		reader.advance( reader._starts("@base") ? 5 : 4 );
+	if ( reader._starts("@base") or reader._starts_ci("BASE") ) {
+		let sparql_style := reader._starts_ci("BASE");
+		reader.advance( sparql_style ? 4 : 5 );
+		reader._skip_ws();
 		reader.set_base(reader.read_iri().get_value());
 		reader._skip_ws();
-		reader._expect(".") if reader._peek() eq ".";
+		if ( sparql_style ) {
+			reader._error("Unexpected directive terminator")
+				if reader._peek() eq ".";
+		}
+		else {
+			reader._expect(".");
+		}
 		return true;
 	}
 	return false;
 }
 
 function _turtle_predicate ( RDFReader reader ) {
+	reader._skip_ws();
+	if ( reader._peek() eq "a" and
+		( reader._starts("a ") or reader._starts("a\t") or
+		reader._starts("a\n") or reader._starts("a\r") ) ) {
+		reader.advance(1);
+		return rdf_iri(RDF_NS _ "type");
+	}
 	let predicate := reader.read_term();
 	reader._error("Turtle predicate must be an IRI")
 		unless predicate instanceof RDFIRI;
@@ -75,6 +172,10 @@ function _turtle_predicate_object_list ( RDFReader reader, subject,
 		last unless reader._peek() eq ";";
 		reader.advance(1);
 		reader._skip_ws();
+		while ( reader._peek() eq ";" ) {
+			reader.advance(1);
+			reader._skip_ws();
+		}
 		last if reader._peek() eq "." or reader._peek() eq "]";
 	}
 }
@@ -128,14 +229,19 @@ function _turtle_collection ( RDFReader reader, Array out ) {
 
 function _turtle_subject ( RDFReader reader, Array out ) {
 	reader._skip_ws();
-	return _turtle_blank_node( reader, out ) if reader._peek() eq "[";
-	return _turtle_collection( reader, out ) if reader._peek() eq "(";
-	return reader.read_subject();
+	if ( reader._peek() eq "[" ) {
+		return { term: _turtle_blank_node( reader, out ), complete: true };
+	}
+	if ( reader._peek() eq "(" ) {
+		return { term: _turtle_collection( reader, out ), complete: false };
+	}
+	return { term: reader.read_subject(), complete: false };
 }
 
 class TurtleParser {
 	method parse_string ( String text, ... PairList options ) {
-		let reader := new RDFReader(source: text);
+		let opts := _parser_options(options);
+		let reader := new RDFReader(source: text, base: opts{base});
 		let out := [];
 		while ( true ) {
 			reader._skip_ws();
@@ -144,7 +250,10 @@ class TurtleParser {
 				next;
 			}
 			let subject := _turtle_subject( reader, out );
-			_turtle_predicate_object_list( reader, subject, out );
+			reader._skip_ws();
+			if ( not subject{complete} or reader._peek() ne "." ) {
+				_turtle_predicate_object_list( reader, subject{term}, out );
+			}
 			reader._expect(".");
 		}
 		return _parser_result( out, options );
@@ -152,5 +261,13 @@ class TurtleParser {
 
 	method parse_file ( path, ... PairList options ) {
 		return self.parse_string(path.slurp_utf8(), ...options);
+	}
+
+	method parse_lines ( Array lines, ... PairList options ) {
+		return self.parse_string(_rdf_concat_chunks(lines), ...options);
+	}
+
+	method parse_chunks ( Array chunks, ... PairList options ) {
+		return self.parse_string(_rdf_concat_chunks(chunks), ...options);
 	}
 }

@@ -1,0 +1,164 @@
+from test/more import *;
+
+requires_capability( "db" );
+
+from rdf import
+	RDFSchemaStore,
+	XSD_NS,
+	owl_class,
+	rdf_iri,
+	rdf_literal,
+	rdf_literal_canonical,
+	rdf_literal_canonical_lexical,
+	rdf_literal_compare,
+	rdf_literal_numeric,
+	rdf_quad,
+	rdf_type,
+	rdfs_domain,
+	rdfs_range,
+	rdfs_subclass_of,
+	rdfs_subproperty_of,
+	xsd;
+from std/db import DB;
+
+let ex := "http://example.com/";
+let store := new RDFSchemaStore(dbh: DB.temp());
+store.install_schema();
+
+store.add_quads([
+	rdf_quad(
+		rdf_iri(ex _ "Employee"),
+		rdfs_subclass_of(),
+		rdf_iri(ex _ "Person"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "Person"),
+		rdfs_subclass_of(),
+		rdf_iri(ex _ "Agent"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "worksFor"),
+		rdfs_subproperty_of(),
+		rdf_iri(ex _ "relatedTo"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "worksFor"),
+		rdfs_domain(),
+		rdf_iri(ex _ "Employee"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "worksFor"),
+		rdfs_range(),
+		rdf_iri(ex _ "Organisation"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "alice"),
+		rdf_type(),
+		rdf_iri(ex _ "Employee"),
+	),
+	rdf_quad(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "worksFor"),
+		rdf_iri(ex _ "acme"),
+	),
+]);
+
+is(
+	store.explicit_find(
+		rdf_iri(ex _ "alice"),
+		rdf_type(),
+		rdf_iri(ex _ "Person"),
+	).length(),
+	0,
+	"RDFSchemaStore keeps explicit_find limited to stored quads",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "alice"),
+		rdf_type(),
+		rdf_iri(ex _ "Person"),
+	).length(),
+	1,
+	"RDFS subclass inference adds direct superclasses",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "alice"),
+		rdf_type(),
+		rdf_iri(ex _ "Agent"),
+	).length(),
+	1,
+	"RDFS subclass inference follows transitive closure",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "alice"),
+		rdf_iri(ex _ "relatedTo"),
+		rdf_iri(ex _ "acme"),
+	).length(),
+	1,
+	"RDFS subproperty inference adds superproperty statements",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "acme"),
+		rdf_type(),
+		rdf_iri(ex _ "Organisation"),
+	).length(),
+	1,
+	"RDFS range inference types resource objects",
+);
+is(
+	store.find(
+		rdf_iri(ex _ "worksFor"),
+		rdfs_subproperty_of(),
+		rdf_iri(ex _ "relatedTo"),
+	).length(),
+	1,
+	"RDFS find still returns explicit schema statements once",
+);
+
+is(
+	owl_class().get_value(),
+	"http://www.w3.org/2002/07/owl#Class",
+	"OWL vocabulary helper returns IRIs",
+);
+is(
+	xsd("integer").get_value(),
+	XSD_NS _ "integer",
+	"XSD vocabulary helper returns IRIs",
+);
+
+let int_lit := rdf_literal("+00042", "", xsd("integer"));
+is(
+	rdf_literal_canonical_lexical(int_lit),
+	"42",
+	"Integer literals canonicalize lexical leading plus and zeroes",
+);
+is(
+	rdf_literal_canonical(rdf_literal("1", "", xsd("boolean"))).get_value(),
+	"true",
+	"Boolean literals canonicalize into true/false",
+);
+is(
+	rdf_literal_numeric(rdf_literal("12.5", "", xsd("decimal"))),
+	12.5,
+	"Numeric typed literals expose numeric value-space values",
+);
+is(
+	rdf_literal_compare(
+		rdf_literal("002", "", xsd("integer")),
+		rdf_literal("2.0", "", xsd("decimal")),
+	),
+	0,
+	"Numeric literal comparison uses value space across datatypes",
+);
+is(
+	rdf_literal_canonical_lexical(
+		rdf_literal("2026-06-07Z", "", xsd("date")),
+	),
+	"2026-06-07+00:00",
+	"Date/time canonicalization normalizes Z timezone spelling",
+);
+
+done_testing();

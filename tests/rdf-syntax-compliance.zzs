@@ -1,0 +1,179 @@
+from test/more import *;
+
+from rdf import
+	NTriplesParser,
+	NTriplesSerializer,
+	TurtleParser,
+	XSD_NS,
+	rdf_blank,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad;
+from std/string import sprint;
+
+function parse_error ( Function f, String name ) {
+	ok( exception(f) != null, name );
+}
+
+let nt_parser := new NTriplesParser();
+let ttl_parser := new TurtleParser();
+let nt_serializer := new NTriplesSerializer();
+
+let nt := nt_parser.parse_string(
+	"<http://example.com/s> <http://example.com/p> " _
+	"\"line\\nquote\\\"tab\\tback\\bform\\f\"@en-gb .\n",
+);
+is( nt.length(), 1, "N-Triples parses one strict triple" );
+is(
+	nt[0].get_object().get_value(),
+	"line\nquote\"tab\tback" _ sprint( "%c", 8 ) _ "form" _
+		sprint( "%c", 12 ),
+	"N-Triples decodes literal escapes",
+);
+is( nt[0].get_object().get_lang(), "en-gb", "N-Triples parses language tags" );
+
+let escaped_nt := nt_parser.parse_string(
+	"<http://example.com/\\u0073> <http://example.com/p> " _
+	"\"\\U000000E9\"^^<http://www.w3.org/2001/XMLSchema#string> .",
+);
+is(
+	escaped_nt[0].get_subject().get_value(),
+	"http://example.com/s",
+	"N-Triples decodes IRI Unicode escapes",
+);
+is( escaped_nt[0].get_object().get_value(), "é", "N-Triples decodes literal Unicode escapes" );
+
+parse_error(
+	function () {
+		nt_parser.parse_string("@prefix ex: <http://example.com/> .");
+	},
+	"N-Triples rejects Turtle directives",
+);
+parse_error(
+	function () {
+		nt_parser.parse_string("<http://example.com/s> a <http://example.com/C> .");
+	},
+	"N-Triples rejects bare a keyword",
+);
+parse_error(
+	function () {
+		nt_parser.parse_string("<http://example.com/s> <http://example.com/p> true .");
+	},
+	"N-Triples rejects Turtle boolean shortcuts",
+);
+parse_error(
+	function () {
+		nt_parser.parse_string("<http://example.com/s> <http://example.com/p> 'x' .");
+	},
+	"N-Triples rejects single-quoted strings",
+);
+parse_error(
+	function () {
+		nt_parser.parse_string("<relative> <http://example.com/p> \"x\" .");
+	},
+	"N-Triples rejects relative IRIs",
+);
+
+let turtle := ttl_parser.parse_string(
+	"@base <http://example.com/a/b/c> .\n" _
+	"@prefix ex: <../ns#> .\n" _
+	"PREFIX foaf: <http://xmlns.com/foaf/0.1/>\n" _
+	"\n" _
+	"<s> a ex:Class ;\n" _
+	"\tex:p 'single quoted' ;\n" _
+	"\tex:long \"\"\"multi\nline\"\"\" ;\n" _
+	"\tex:escaped \"tab\\tquote\\\"apos\\'\" ;\n" _
+	"\tex:decimal .5 ;\n" _
+	"\tex:double 1.e2 ;\n" _
+	"\tex:bool true ;\n" _
+	"\tex:name ex:local\\~name ;\n" _
+	"\tfoaf:name \"Alice\"@en-GB .\n",
+);
+is( turtle.length(), 9, "Turtle parses compact compliance sample" );
+is(
+	turtle[0].get_subject().get_value(),
+	"http://example.com/a/b/s",
+	"Turtle resolves relative subject against base",
+);
+is(
+	turtle[0].get_predicate().get_value(),
+	"http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+	"Turtle treats a as rdf:type in predicate position",
+);
+is(
+	turtle[0].get_object().get_value(),
+	"http://example.com/a/ns#Class",
+	"Turtle resolves relative prefix IRI against base",
+);
+is( turtle[2].get_object().get_value(), "multi\nline", "Turtle parses long string literals" );
+is( turtle[4].get_object().get_value(), ".5", "Turtle parses leading-dot decimal literals" );
+is( turtle[4].get_object().get_datatype().get_value(), XSD_NS _ "decimal", "Turtle types leading-dot decimals" );
+is( turtle[5].get_object().get_datatype().get_value(), XSD_NS _ "double", "Turtle parses double literals with empty fractional part" );
+is( turtle[7].get_object().get_value(), "http://example.com/a/ns#local~name", "Turtle expands escaped prefixed names" );
+is( turtle[8].get_object().get_lang(), "en-gb", "Turtle normalizes language tags through RDFLiteral" );
+
+parse_error(
+	function () {
+		ttl_parser.parse_string("@prefix ex: <http://example.com/> ex:s ex:p ex:o .");
+	},
+	"Turtle requires @prefix directive terminator",
+);
+parse_error(
+	function () {
+		ttl_parser.parse_string("PREFIX ex: <http://example.com/> . ex:s ex:p ex:o .");
+	},
+	"Turtle rejects SPARQL-style PREFIX directive terminator",
+);
+parse_error(
+	function () {
+		ttl_parser.parse_string("a <http://example.com/p> <http://example.com/o> .");
+	},
+	"Turtle rejects a keyword in subject position",
+);
+
+let serialized := nt_serializer.serialize([
+	rdf_quad(
+		rdf_iri("http://example.com/has space"),
+		rdf_iri("http://example.com/p"),
+		rdf_literal(
+			"line\n" _ sprint( "%c", 1 ) _ "quote\"",
+			"",
+			rdf_iri("http://example.com/dt space"),
+		),
+	),
+]);
+like(
+	serialized,
+	/^<http:\/\/example\.com\/has\\u0020space> /,
+	"N-Triples serializer escapes spaces in IRIs",
+);
+like(
+	serialized,
+	/"line\\n\\u0001quote\\""/,
+	"N-Triples serializer escapes literal controls",
+);
+like(
+	serialized,
+	/\^\^<http:\/\/example\.com\/dt\\u0020space>/,
+	"N-Triples serializer escapes datatype IRIs",
+);
+is(
+	nt_parser.parse_string(serialized)[0].get_object().get_value(),
+	"line\n" _ sprint( "%c", 1 ) _ "quote\"",
+	"N-Triples serializer output parses back",
+);
+
+parse_error(
+	function () {
+		nt_serializer.serialize([
+			rdf_quad(
+				rdf_blank("bad label"),
+				rdf_iri("http://example.com/p"),
+				rdf_literal("x"),
+			),
+		]);
+	},
+	"N-Triples serializer rejects unrepresentable blank labels",
+);
+
+done_testing();

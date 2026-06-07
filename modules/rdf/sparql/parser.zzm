@@ -4,6 +4,57 @@
 
 rdf/sparql/parser - SPARQL 1.1 syntax parser.
 
+=head1 SYNOPSIS
+
+  from rdf/sparql/parser import sparql_parse_ast;
+
+  let ast := sparql_parse_ast("ASK { ?s ?p ?o }");
+
+
+=head1 DESCRIPTION
+
+This module parses SPARQL 1.1 Query and Update syntax into AST
+dictionaries used by C<rdf/sparql>. It validates syntax structure,
+prologues, query forms, update operations, blank node scoping, and common
+SPARQL grammar constraints. It does not execute queries.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<SparqlSyntaxParser>
+
+=over
+
+=item C<< parse(String source) >>
+
+Parses C<source> and returns an AST dictionary. Throws C<SPARQLError> on
+invalid syntax.
+
+=back
+
+=back
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_parse_ast(String source) >>
+
+Convenience function returning C<(new SparqlSyntaxParser()).parse(source)>.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/parser >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import SPARQLError;

@@ -8,10 +8,35 @@ rdf/ns - Common RDF namespace constants.
 
   from rdf/ns import RDF_NS, RDFS_NS, OWL_NS, SKOS_NS, FOAF_NS;
 
+
 =head1 DESCRIPTION
 
 This module exports constants for well-known RDF, Linked Data, and Semantic
 Web namespaces.
+
+=head1 EXPORTS
+
+=head2 Constants
+
+Exports namespace IRI strings including C<RDF_NS>, C<RDFS_NS>, C<OWL_NS>,
+C<XSD_NS>, C<XML_NS>, C<XMLNS_NS>, C<SKOS_NS>, C<SKOSXL_NS>,
+C<FOAF_NS>, C<DCTERMS_NS>, C<DC_NS>, C<DOAP_NS>, C<VOID_NS>,
+C<VANN_NS>, C<CC_NS>, C<SIOC_NS>, C<BIBO_NS>, C<BIO_NS>, C<REL_NS>,
+C<REV_NS>, C<GR_NS>, C<SCHEMA_NS>, C<PROV_NS>, C<DCAT_NS>,
+C<LDP_NS>, C<OA_NS>, C<ORG_NS>, C<QB_NS>, C<TIME_NS>,
+C<ACTIVITYSTREAMS_NS>, C<AS_NS>, C<HYDRA_NS>, C<SHACL_NS>,
+C<ODRL_NS>, C<CSVW_NS>, C<SSN_NS>, C<SOSA_NS>, C<VCARD_NS>,
+C<GEO_NS>, C<GEOSPARQL_NS>, C<EXIF_NS>, C<MA_NS>, C<EVENT_NS>,
+C<MO_NS>, C<CERT_NS>, C<ACL_NS>, C<HTTP_NS>, and
+C<SPARQL_RESULTS_NS>.
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/ns >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
 
 =cut
 

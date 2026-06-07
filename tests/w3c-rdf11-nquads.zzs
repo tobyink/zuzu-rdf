@@ -1,0 +1,73 @@
+from test/more import *;
+
+author_testing();
+requires_capability( "fs" );
+
+from rdf import NQuadsParser;
+from std/io import Path;
+from std/string import split, starts_with, trim;
+
+let root := new Path("tests/w3c/rdf/rdf11/rdf-n-quads");
+let manifest_path := root.child("manifest.ttl");
+
+if ( not manifest_path.exists() ) {
+	pass("W3C RDF 1.1 N-Quads manifest not vendored");
+	done_testing();
+}
+
+function _manifest_cases ( String text ) {
+	let cases := [];
+	let current := null;
+	for ( let line in split( text, "\n" ) ) {
+		let clean := trim(line);
+		next if clean eq "" or starts_with( clean, "#" );
+		if ( clean ~ /^<#([^>]+)>/ ) {
+			let m := clean ~ /^<#([^>]+)>/;
+			current := { id: m[1], kind: "", action: "" };
+			cases.push(current);
+		}
+		next if current == null;
+		if ( clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/ ) {
+			let m := clean ~ /(?:rdf:type|a)\s+rdft:Test([A-Za-z]+)/;
+			current{kind} := m[1];
+		}
+		if ( clean ~ /mf:action\s+<([^>]+)>/ ) {
+			let m := clean ~ /mf:action\s+<([^>]+)>/;
+			current{action} := m[1];
+		}
+	}
+	return cases;
+}
+
+let parser := new NQuadsParser();
+let positive_count := 0;
+let negative_count := 0;
+
+for ( let c in _manifest_cases(manifest_path.slurp_utf8()) ) {
+	next if c{action} eq "";
+	let action_path := root.child(c{action});
+	if ( c{kind} eq "NQuadsPositiveSyntax" ) {
+		positive_count++;
+		is(
+			exception( function () {
+				parser.parse_file(action_path);
+			} ),
+			null,
+			"W3C N-Quads positive syntax " _ c{id},
+		);
+	}
+	else if ( c{kind} eq "NQuadsNegativeSyntax" ) {
+		negative_count++;
+		ok(
+			exception( function () {
+				parser.parse_file(action_path);
+			} ),
+			"W3C N-Quads negative syntax " _ c{id},
+		);
+	}
+}
+
+ok( positive_count > 0, "W3C N-Quads positive syntax cases discovered" );
+ok( negative_count > 0, "W3C N-Quads negative syntax cases discovered" );
+
+done_testing();

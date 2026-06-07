@@ -1,0 +1,189 @@
+from test/more import *;
+
+from rdf import
+	SPARQLProtocolClient,
+	rdf_iri,
+	rdf_literal,
+	sparql_protocol_query,
+	sparql_protocol_update;
+
+class FakeRequest {
+	let req_method := "";
+	let req_url := "";
+	let req_headers := {};
+	let req_body := "";
+
+	method method () {
+		return req_method;
+	}
+
+	method url () {
+		return req_url;
+	}
+
+	method header ( name, value? ) {
+		if ( value != null ) {
+			req_headers.set( name, value );
+			return self;
+		}
+		return req_headers.get( name, null );
+	}
+
+	method body ( value? ) {
+		if ( value != null ) {
+			req_body := value;
+			return self;
+		}
+		return req_body;
+	}
+}
+
+class FakeResponse {
+	let Number response_status := 200;
+	let String response_type := "application/sparql-results+json";
+	let String response_body := "";
+
+	method expect_success () {
+		die "HTTP failure" unless response_status >= 200 and
+			response_status < 300;
+		return self;
+	}
+
+	method header ( String name ) {
+		return response_type if lc(name) eq "content-type";
+		return null;
+	}
+
+	method content () {
+		return response_body;
+	}
+}
+
+class FakeUserAgent {
+	let requests := [];
+	let responses := [];
+
+	method build_request ( http_method, url ) {
+		let request := new FakeRequest(
+			req_method: http_method,
+			req_url: url,
+		);
+		requests.push(request);
+		return request;
+	}
+
+	method send ( request ) {
+		return responses.shift();
+	}
+
+	method last_request () {
+		return requests[ requests.length() - 1 ];
+	}
+}
+
+let ua := new FakeUserAgent(responses: [
+	new FakeResponse(
+		response_type: "application/sparql-results+json",
+		response_body: "{\"head\":{\"vars\":[\"s\",\"o\"]},\"results\":{\"bindings\":[{\"s\":{\"type\":\"uri\",\"value\":\"http://example.com/s\"},\"o\":{\"type\":\"literal\",\"value\":\"Alice\",\"xml:lang\":\"en\"}}]}}\n",
+	),
+	new FakeResponse(
+		response_type: "application/sparql-results+xml",
+		response_body: "<?xml version=\"1.0\"?><sparql xmlns=\"http://www.w3.org/2005/sparql-results#\"><head></head><boolean>true</boolean></sparql>",
+	),
+	new FakeResponse(
+		response_type: "application/n-quads",
+		response_body: "<http://example.com/s> <http://example.com/p> \"o\" .\n",
+	),
+	new FakeResponse(
+		response_status: 204,
+		response_type: "text/plain",
+		response_body: "",
+	),
+]);
+
+let client := new SPARQLProtocolClient(
+	endpoint: "https://example.com/sparql",
+	user_agent: ua,
+	headers: { Authorization: "Bearer TOKEN" },
+);
+
+let select := client.query(
+	"SELECT ?s ?o WHERE { ?s ?p ?o }",
+	default_graph_uri: "http://example.com/g",
+);
+is( select{type}, "select", "client parses SPARQL JSON SELECT result" );
+is( select{variables}[0], "s", "client keeps SELECT variables" );
+is(
+	select{results}[0]{s}.to_String(),
+	rdf_iri("http://example.com/s").to_String(),
+	"client parses JSON URI bindings",
+);
+is(
+	select{results}[0]{o}.to_String(),
+	rdf_literal( "Alice", "en" ).to_String(),
+	"client parses JSON literal bindings",
+);
+is( ua.last_request().method(), "POST", "client sends query as POST" );
+like( ua.last_request().body(), /query=SELECT/, "client form-encodes query" );
+like(
+	ua.last_request().body(),
+	/default-graph-uri=http%3A%2F%2Fexample\.com%2Fg/,
+	"client includes default graph URI",
+);
+like(
+	ua.last_request().header("Accept"),
+	/sparql-results\+json/,
+	"client advertises SPARQL JSON results",
+);
+is(
+	ua.last_request().header("Authorization"),
+	"Bearer TOKEN",
+	"client applies default headers",
+);
+
+let ask := client.query("ASK { ?s ?p ?o }");
+is( ask{type}, "ask", "client parses SPARQL XML ASK result" );
+is( ask{boolean}, true, "client parses XML boolean" );
+
+let graph := client.query("CONSTRUCT WHERE { ?s ?p ?o }");
+is( graph{type}, "construct", "client preserves graph query kind" );
+is( graph{quads}.length(), 1, "client parses RDF graph response" );
+is(
+	graph{quads}[0].get_object().to_String(),
+	rdf_literal("o").to_String(),
+	"client parses graph result terms",
+);
+
+let update := client.update("INSERT DATA { <s> <p> \"o\" . }");
+is( update{type}, "update", "client returns update result shape" );
+is( update{count}, 1, "client reports update operation count" );
+is( update{operations}[0], "insert", "client reports update operation" );
+like( ua.last_request().body(), /update=INSERT/, "client form-encodes update" );
+
+let helper_ua := new FakeUserAgent(responses: [
+	new FakeResponse(
+		response_type: "application/sparql-results+json",
+		response_body: "{\"boolean\":false}\n",
+	),
+	new FakeResponse(response_status: 204),
+]);
+is(
+	sparql_protocol_query(
+		"https://example.com/sparql",
+		"ASK {}",
+		user_agent: helper_ua,
+	){boolean},
+	false,
+	"query helper returns parsed remote result",
+);
+is(
+	sparql_protocol_update(
+		"https://example.com/sparql",
+		"DELETE WHERE { ?s ?p ?o }",
+		user_agent: helper_ua,
+	){operations}[0],
+	"delete",
+	"update helper returns parsed update summary",
+);
+
+done_testing();

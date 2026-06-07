@@ -1,0 +1,182 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/builder - RDF graph builder DSL.
+
+=head1 SYNOPSIS
+
+  from rdf/builder import RDFBuilder;
+  from rdf/vocab import rdf_type;
+
+  let builder := new RDFBuilder();
+  builder
+      .prefix("ex", "http://example.com/")
+      .triple("ex:alice", rdf_type(), "ex:Person")
+      .triple("ex:alice", "ex:name", builder.literal("Alice"));
+
+
+=head1 DESCRIPTION
+
+C<RDFBuilder> is a small convenience layer for constructing arrays of RDF
+quads. It expands prefixed names through an C<RDFPrefixRegistry>, accepts
+existing RDF terms, creates literals, and can add accumulated quads to an
+C<RDFStore>.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<RDFBuilder>
+
+=over
+
+=item C<< prefix(String name, String iri) >>
+
+Registers a namespace prefix and returns the builder.
+
+=item C<< iri(value) >>
+
+Returns C<value> as an IRI term. Existing IRI terms are returned as-is;
+strings containing a known prefix are expanded.
+
+=item C<< blank(String label) >>
+
+Returns a blank node term.
+
+=item C<< literal(value, String lang := "", datatype := null) >>
+
+Returns an RDF literal.
+
+=item C<< term(value) >>
+
+Converts RDF terms and supported string forms into terms. Strings that
+look like prefixed names become IRIs; other strings become literals.
+
+=item C<< quad(subject, predicate, object, graph := null) >>
+
+Builds and stores a quad, returning the builder.
+
+=item C<< triple(subject, predicate, object) >>
+
+Builds a default-graph triple or a triple in the current graph.
+
+=item C<< in_graph(graph, Function todo) >>
+
+Temporarily sets the current graph while running C<todo>.
+
+=item C<< add_to(RDFStore store) >>
+
+Adds accumulated quads to C<store> and returns the store.
+
+=item C<< clear() >>
+
+Clears the builder's accumulated quads and returns the builder.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/builder >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/prefix import RDFPrefixRegistry;
+from rdf/store import RDFStore;
+from rdf/term import
+	RDFBlank,
+	RDFDefaultGraph,
+	RDFIRI,
+	RDFLiteral,
+	rdf_blank,
+	rdf_default_graph,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad;
+
+class RDFBuilder {
+	let RDFPrefixRegistry prefixes with get := null;
+	let Array quads with get := [];
+	let current_graph := null;
+
+	method __build__ () {
+		prefixes := new RDFPrefixRegistry() if prefixes == null;
+		current_graph := rdf_default_graph() if current_graph == null;
+	}
+
+	method prefix ( String name, String iri ) {
+		prefixes.set( name, iri );
+		return self;
+	}
+
+	method iri ( value ) {
+		return value if value instanceof RDFIRI;
+		return prefixes.expand(value) if ( "" _ value ) ~ /^[A-Za-z][A-Za-z0-9_-]*:/ and
+			not ( ( "" _ value ) ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\// );
+		return rdf_iri("" _ value);
+	}
+
+	method blank ( String label ) {
+		return rdf_blank(label);
+	}
+
+	method literal ( value, String lang := "", datatype := null ) {
+		let dt := datatype;
+		dt := self.iri(datatype) if datatype != null and
+			not ( datatype instanceof RDFIRI );
+		return rdf_literal( value, lang, dt );
+	}
+
+	method term ( value ) {
+		return value if value instanceof RDFIRI or value instanceof RDFBlank or
+			value instanceof RDFLiteral or value instanceof RDFDefaultGraph;
+		return self.iri(value);
+	}
+
+	method quad ( subject, predicate, object, graph := null ) {
+		let g := graph == null ? current_graph : self.term(graph);
+		quads.push(rdf_quad(
+			self.term(subject),
+			self.term(predicate),
+			object instanceof RDFLiteral ? object : self.term(object),
+			g,
+		));
+		return self;
+	}
+
+	method triple ( subject, predicate, object ) {
+		return self.quad( subject, predicate, object );
+	}
+
+	method in_graph ( graph, Function todo ) {
+		let previous := current_graph;
+		current_graph := self.term(graph);
+		try {
+			todo(self);
+		}
+		catch ( Exception e ) {
+			current_graph := previous;
+			throw e;
+		}
+		current_graph := previous;
+		return self;
+	}
+
+	method add_to ( RDFStore store ) {
+		store.add_quads(quads);
+		return store;
+	}
+
+	method clear () {
+		quads := [];
+		return self;
+	}
+}

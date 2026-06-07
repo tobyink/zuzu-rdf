@@ -4,6 +4,115 @@
 
 rdf/sparql - SPARQL query execution.
 
+=head1 SYNOPSIS
+
+  from rdf/sparql import sparql_query, sparql_update;
+
+  let rows := sparql_query(store, """
+  SELECT ?s WHERE { ?s ?p ?o }
+  """);
+
+  sparql_update(store, """
+  INSERT DATA { <s> <p> "o" . }
+  """);
+
+
+=head1 DESCRIPTION
+
+This module parses, validates, executes, prepares, and diagnoses SPARQL
+1.1 Query and Update strings over C<RDFStore>. Query results are returned
+as dictionaries: C<select> results include C<variables> and C<results>,
+C<ask> results include C<boolean>, and graph results include C<quads>.
+Update execution returns a dictionary describing the update operations
+performed.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<SPARQLPreparedQuery>
+
+Construct with C<source>. The query is parsed during construction and
+available from C<get_ast>.
+
+=over
+
+=item C<< execute(RDFStore store, inherited_dataset := null) >>
+
+Executes the prepared query against C<store>.
+
+=back
+
+=item C<SPARQLPreparedUpdate>
+
+Construct with C<source>. The update is parsed during construction and
+available from C<get_ast>.
+
+=over
+
+=item C<< execute(RDFStore store) >>
+
+Executes the prepared update against C<store>.
+
+=back
+
+=back
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_parse(String query) >>
+
+Parses SPARQL Query or Update syntax and returns an AST dictionary.
+
+=item C<< sparql_parse_query(String query) >>
+
+Alias for parsing query syntax retained for callers that want a query
+entry point.
+
+=item C<< sparql_prepare_query(String query) >>
+
+Returns a C<SPARQLPreparedQuery>, throwing C<SPARQLError> if the source is
+an update or invalid syntax.
+
+=item C<< sparql_prepare_update(String update) >>
+
+Returns a C<SPARQLPreparedUpdate>, throwing C<SPARQLError> if the source
+is not an update or has invalid syntax.
+
+=item C<< sparql_validate(String source) >>
+
+Returns a validation dictionary with C<ok>, C<type>, C<syntax>, and
+C<error>.
+
+=item C<< sparql_diagnose(RDFStore store, String source) >>
+
+Validates then executes C<source>, returning validation information plus a
+C<result> on success or C<error> on failure.
+
+=item C<< sparql_query(RDFStore store, String query, inherited_dataset := null) >>
+
+Executes a SPARQL Query string over C<store>. Throws if given Update
+syntax.
+
+=item C<< sparql_update(RDFStore store, String update) >>
+
+Executes a SPARQL Update string over C<store>. Throws if given Query
+syntax.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/store import RDFStore;
@@ -23,14 +132,19 @@ from rdf/term import
 	rdf_term_equals,
 	rdf_term_key;
 from rdf/parser/common import RDFReader;
+from rdf/parser/nquads import NQuadsParser;
+from rdf/parser/ntriples import NTriplesParser;
+from rdf/parser/rdfxml import RdfXmlParser;
+from rdf/parser/turtle import TurtleParser;
 from rdf/sparql/parser import sparql_parse_ast;
 from std/data/json import JSON;
 from std/digest/md5 import md5_hex;
 from std/digest/sha import sha1_hex, sha256_hex, sha384_hex, sha512_hex;
+from std/io import Path;
 from std/internals import to_Regexp_with_flags;
 from std/math import Math;
 from std/net/http import UserAgent;
-from std/net/url import escape as _url_escape;
+from std/net/url import escape as _url_escape, unescape as _url_unescape;
 from std/string import contains, ends_with, index, join, replace, rindex, split, sprint, starts_with, substr, trim;
 from std/time import Time, TimeZone;
 from std/uuid import create_uuid;
@@ -56,6 +170,7 @@ function _sparql_prefix_text;
 function _sparql_decimal_lexical;
 function _sparql_double_lexical;
 function sparql_query;
+function sparql_update;
 
 let _sparql_bnode_counter := 0;
 
@@ -229,13 +344,15 @@ function _sparql_prefixes ( String text ) {
 	let body := [];
 	for ( let line in lines ) {
 		let clean := trim(line);
-		if ( clean ~ /^BASE\s+<([^>]+)>/i ) {
-			let m := clean ~ /^BASE\s+<([^>]+)>/i;
+		if ( clean ~ /^BASE\s+<([^>]+)>\s*([\s\S]*)$/i ) {
+			let m := clean ~ /^BASE\s+<([^>]+)>\s*([\s\S]*)$/i;
 			prefixes.set( "__base", m[1] );
+			body.push(m[2]) if trim(m[2]) ne "";
 		}
-		else if ( clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>/i ) {
-			let m := clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>/i;
+		else if ( clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>\s*([\s\S]*)$/i ) {
+			let m := clean ~ /^PREFIX\s+([A-Za-z][A-Za-z0-9_-]*|):\s*<([^>]+)>\s*([\s\S]*)$/i;
 			prefixes.set( m[1], m[2] );
+			body.push(m[3]) if trim(m[3]) ne "";
 		}
 		else if ( clean ne "" ) {
 			body.push(line);
@@ -4025,7 +4142,617 @@ function _sparql_describe_quads ( RDFStore store, parsed, Array bindings ) {
 	return quads;
 }
 
+function _sparql_is_update_ast ( String source ) {
+	return sparql_parse_ast(source){type} eq "update";
+}
+
+function _sparql_top_level_keyword_pos ( String text, String keyword ) {
+	let quoted := false;
+	let iri := false;
+	let braces := 0;
+	let parens := 0;
+	let brackets := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			i++;
+			next;
+		}
+		braces++ if ch eq "{";
+		braces-- if ch eq "}";
+		parens++ if ch eq "(";
+		parens-- if ch eq ")";
+		brackets++ if ch eq "[";
+		brackets-- if ch eq "]";
+		return i if braces == 0 and parens == 0 and brackets == 0 and
+			_sparql_starts_keyword( substr( text, i ), keyword );
+		i++;
+	}
+	return -1;
+}
+
+function _sparql_split_update_operations ( String source ) {
+	let text := _sparql_prefixes(source){body};
+	let out := [];
+	let token := "";
+	let quoted := false;
+	let iri := false;
+	let braces := 0;
+	let parens := 0;
+	let brackets := 0;
+	let i := 0;
+	while ( i < length text ) {
+		let ch := substr( text, i, 1 );
+		if ( quoted ) {
+			token _= ch;
+			quoted := false if ch eq "\"" and substr( text, i - 1, 1 ) ne "\\";
+			i++;
+			next;
+		}
+		if ( iri ) {
+			token _= ch;
+			iri := false if ch eq ">";
+			i++;
+			next;
+		}
+		if ( ch eq "\"" ) {
+			quoted := true;
+			token _= ch;
+			i++;
+			next;
+		}
+		if ( _sparql_is_iri_start( text, i ) ) {
+			iri := true;
+			token _= ch;
+			i++;
+			next;
+		}
+		braces++ if ch eq "{";
+		braces-- if ch eq "}";
+		parens++ if ch eq "(";
+		parens-- if ch eq ")";
+		brackets++ if ch eq "[";
+		brackets-- if ch eq "]";
+		if ( ch eq ";" and braces == 0 and parens == 0 and brackets == 0 ) {
+			out.push(trim(token)) if trim(token) ne "";
+			token := "";
+			i++;
+			next;
+		}
+		token _= ch;
+		i++;
+	}
+	out.push(trim(token)) if trim(token) ne "";
+	return out;
+}
+
+function _sparql_update_silent ( Dict op ) {
+	let text := trim(op{text});
+	let parts := split( text, " ", 2 );
+	let head := uc(parts[0]);
+	let rest := parts.length() > 1 ? trim(parts[1]) : "";
+	if ( _sparql_starts_keyword( rest, "SILENT" ) ) {
+		op{text} := head _ " " _ trim(substr( rest, 6 ));
+		op{silent} := true;
+	}
+	return op;
+}
+
+function _sparql_update_parse_with ( String text, Dict prefixes ) {
+	let clean := trim(text);
+	if ( not _sparql_starts_keyword( clean, "WITH" ) ) {
+		return { graph: null, text: clean };
+	}
+	let rest := trim(substr( clean, 4 ));
+	throw new SPARQLError(message: "SPARQL Update WITH graph expected")
+		unless rest ~ /^(\S+)\s+([\s\S]+)$/;
+	let m := rest ~ /^(\S+)\s+([\s\S]+)$/;
+	let graph := _sparql_expand( m[1], prefixes );
+	throw new SPARQLError(message: "SPARQL Update WITH expects graph IRI")
+		unless graph instanceof RDFIRI;
+	return { graph: graph, text: trim(m[2]) };
+}
+
+function _sparql_update_graph_operand ( String text, Dict prefixes ) {
+	let clean := trim(text);
+	return rdf_default_graph() if _sparql_starts_keyword( clean, "DEFAULT" );
+	if ( _sparql_starts_keyword( clean, "GRAPH" ) ) {
+		clean := trim(replace( clean, /^GRAPH\s+/i, "", "" ));
+	}
+	let graph := _sparql_expand( clean, prefixes );
+	throw new SPARQLError(message: "SPARQL Update graph operand must be an IRI")
+		unless graph instanceof RDFIRI;
+	return graph;
+}
+
+function _sparql_update_template_patterns ( String text, Dict prefixes,
+	graph := null ) {
+	let patterns := [];
+	let rest := trim(text);
+	while ( rest ~ /GRAPH\s+([^\s]+)\s*\{([^{}]*)\}/i ) {
+		let m := rest ~ /GRAPH\s+([^\s]+)\s*\{([^{}]*)\}/i;
+		let graph_spec := _sparql_expand( m[1], prefixes );
+		for ( let pattern in _sparql_parse_patterns(
+			m[2],
+			prefixes,
+			graph_spec,
+		) ) {
+			patterns.push(pattern);
+		}
+		rest := trim(replace(
+			rest,
+			/GRAPH\s+[^\s]+\s*\{[^{}]*\}/i,
+			"",
+			"",
+		));
+	}
+	if ( rest ne "" ) {
+		for ( let pattern in _sparql_parse_patterns( rest, prefixes, graph ) ) {
+			patterns.push(pattern);
+		}
+	}
+	return patterns;
+}
+
+function _sparql_update_has_blank_template ( pattern ) {
+	return pattern[0] instanceof RDFBlank or pattern[1] instanceof RDFBlank or
+		pattern[2] instanceof RDFBlank or pattern[3] instanceof RDFBlank;
+}
+
+function _sparql_update_construct_quads ( String text, Dict prefixes,
+	Array bindings, graph := null, Boolean delete_template := false ) {
+	let out := [];
+	let seen := {};
+	let patterns := _sparql_update_template_patterns( text, prefixes, graph );
+	for ( let pattern in patterns ) {
+		throw new SPARQLError(
+			message: "SPARQL Update DELETE templates cannot contain blank nodes",
+		) if delete_template and _sparql_update_has_blank_template(pattern);
+	}
+	for ( let binding in bindings ) {
+		let blanks := {};
+		for ( let pattern in patterns ) {
+			let s := _sparql_construct_term( binding, pattern[0], blanks );
+			let p := _sparql_construct_term( binding, pattern[1], blanks );
+			let o := _sparql_construct_term( binding, pattern[2], blanks );
+			let g := _sparql_construct_term( binding, pattern[3], blanks );
+			next if s == null or p == null or o == null or g == null;
+			throw new SPARQLError(message: "SPARQL Update template term expected")
+				unless _sparql_is_term(s) and _sparql_is_term(p) and
+				_sparql_is_term(o) and _sparql_is_term(g);
+			let key := rdf_term_key(s) _ "\n" _ rdf_term_key(p) _ "\n" _
+				rdf_term_key(o) _ "\n" _ rdf_term_key(g);
+			next if seen.exists(key);
+			seen.set( key, true );
+			out.push(rdf_quad( s, p, o, g ));
+		}
+	}
+	return out;
+}
+
+function _sparql_update_regraph ( Array quads, graph ) {
+	return quads if graph == null;
+	let out := [];
+	for ( let quad in quads ) {
+		out.push(rdf_quad(
+			quad.get_subject(),
+			quad.get_predicate(),
+			quad.get_object(),
+			graph,
+		));
+	}
+	return out;
+}
+
+function _sparql_update_load_text ( String iri ) {
+	if ( starts_with( lc(iri), "http://" ) or starts_with( lc(iri), "https://" ) ) {
+		let ua := new UserAgent();
+		return to_string(
+			ua.build_request( "GET", iri )
+				.header(
+					"Accept",
+					"text/turtle, application/n-triples, application/n-quads, application/rdf+xml",
+				)
+				.send(ua)
+				.expect_success()
+				.content(),
+		);
+	}
+	let path := starts_with( lc(iri), "file://" )
+		? _url_unescape(substr( iri, 7 ))
+		: iri;
+	return ( new Path(path) ).slurp_utf8();
+}
+
+function _sparql_update_load_quads ( String iri, graph ) {
+	let text := _sparql_update_load_text(iri);
+	let lower := lc(iri);
+	let quads := [];
+	if ( ends_with( lower, ".nq" ) or ends_with( lower, ".nquads" ) ) {
+		quads := ( new NQuadsParser() ).parse_string(text);
+	}
+	else if ( ends_with( lower, ".nt" ) or ends_with( lower, ".ntriples" ) ) {
+		quads := ( new NTriplesParser() ).parse_string(text);
+	}
+	else if ( ends_with( lower, ".rdf" ) or ends_with( lower, ".xml" ) ) {
+		quads := ( new RdfXmlParser() ).parse_string(text, base: iri);
+	}
+	else {
+		quads := ( new TurtleParser() ).parse_string(text, base: iri);
+	}
+	return _sparql_update_regraph( quads, graph );
+}
+
+function _sparql_update_data ( RDFStore store, String text, Dict prefixes,
+	Boolean delete_data ) {
+	let item := _sparql_extract_braced(text);
+	let quads := _sparql_update_construct_quads(
+		item{body},
+		prefixes,
+		[ {} ],
+		null,
+		delete_data,
+	);
+	if ( delete_data ) {
+		store.remove_quads(quads);
+	}
+	else {
+		store.add_quads(quads);
+	}
+	return {
+		operation: delete_data ? "delete-data" : "insert-data",
+		quads: quads.length(),
+	};
+}
+
+function _sparql_update_clear ( RDFStore store, String text, Dict prefixes,
+	String operation, Boolean silent ) {
+	let rest := trim(replace( text, /^[A-Za-z]+\s*/i, "", "" ));
+	rest := trim(substr( rest, 6 )) if _sparql_starts_keyword( rest, "SILENT" );
+	if ( _sparql_starts_keyword( rest, "DEFAULT" ) ) {
+		store.clear_graph();
+		return { operation: lc(operation), graphs: 1 };
+	}
+	if ( _sparql_starts_keyword( rest, "ALL" ) ) {
+		store.clear();
+		return { operation: lc(operation), graphs: 0 };
+	}
+	if ( _sparql_starts_keyword( rest, "NAMED" ) ) {
+		let names := store.graph_names();
+		for ( let graph in names ) {
+			store.clear_graph(graph);
+		}
+		return { operation: lc(operation), graphs: names.length() };
+	}
+	if ( _sparql_starts_keyword( rest, "GRAPH" ) ) {
+		store.clear_graph(_sparql_update_graph_operand( rest, prefixes ));
+		return { operation: lc(operation), graphs: 1 };
+	}
+	throw new SPARQLError(message: "SPARQL Update " _ operation _ " target expected")
+		unless silent;
+	return { operation: lc(operation), graphs: 0, silent: true };
+}
+
+function _sparql_update_graph_management ( RDFStore store, String text,
+	Dict prefixes, String operation, Boolean silent ) {
+	let rest := trim(replace( text, /^[A-Za-z]+\s*/i, "", "" ));
+	rest := trim(substr( rest, 6 )) if _sparql_starts_keyword( rest, "SILENT" );
+	if ( _sparql_starts_keyword( rest, "GRAPH" ) ) {
+		let graph := _sparql_update_graph_operand( rest, prefixes );
+		if ( operation eq "CREATE" ) {
+			if ( store.graph_exists(graph) and not silent ) {
+				throw new SPARQLError(message: "SPARQL Update graph already exists");
+			}
+			return { operation: "create", graphs: 1, silent: silent };
+		}
+	}
+	if ( not ( rest ~ /^(DEFAULT|GRAPH\s+\S+)\s+TO\s+(DEFAULT|GRAPH\s+\S+)$/i ) ) {
+		throw new SPARQLError(message: "SPARQL Update graph target expected")
+			unless silent;
+		return { operation: lc(operation), graphs: 0, silent: true };
+	}
+	let m := rest ~ /^(DEFAULT|GRAPH\s+\S+)\s+TO\s+(DEFAULT|GRAPH\s+\S+)$/i;
+	let source := _sparql_update_graph_operand( m[1], prefixes );
+	let target := _sparql_update_graph_operand( m[2], prefixes );
+	if ( operation eq "ADD" ) {
+		store.add_graph( source, target );
+	}
+	else if ( operation eq "COPY" ) {
+		store.copy_graph( source, target );
+	}
+	else if ( operation eq "MOVE" ) {
+		store.move_graph( source, target );
+	}
+	return { operation: lc(operation), graphs: 2, silent: silent };
+}
+
+function _sparql_update_load ( RDFStore store, String text, Dict prefixes,
+	Boolean silent ) {
+	let rest := trim(substr( text, 4 ));
+	rest := trim(substr( rest, 6 )) if _sparql_starts_keyword( rest, "SILENT" );
+	let target := null;
+	let p := _sparql_top_level_keyword_pos( rest, "INTO" );
+	if ( p >= 0 ) {
+		target := _sparql_update_graph_operand(
+			trim(substr( rest, p + 4 )),
+			prefixes,
+		);
+		rest := trim(substr( rest, 0, p ));
+	}
+	let source := _sparql_expand( rest, prefixes );
+	if ( not( source instanceof RDFIRI ) ) {
+		throw new SPARQLError(message: "SPARQL Update LOAD source must be an IRI")
+			unless silent;
+		return { operation: "load", quads: 0, silent: true };
+	}
+	try {
+		let quads := _sparql_update_load_quads( source.get_value(), target );
+		store.add_quads(quads);
+		return { operation: "load", quads: quads.length(), silent: silent };
+	}
+	catch ( Exception e ) {
+		if ( not silent ) {
+			throw e;
+		}
+		return { operation: "load", quads: 0, silent: true };
+	}
+}
+
+function _sparql_update_modify ( RDFStore store, String text, Dict prefixes ) {
+	let with_info := _sparql_update_parse_with( text, prefixes );
+	let clean := with_info{text};
+	let delete_body := "";
+	let insert_body := "";
+	let rest := clean;
+	if ( _sparql_starts_keyword( rest, "DELETE" ) ) {
+		let item := _sparql_extract_braced(substr( rest, 6 ));
+		delete_body := item{body};
+		rest := item{tail};
+		if ( _sparql_starts_keyword( rest, "INSERT" ) ) {
+			let insert_item := _sparql_extract_braced(substr( rest, 6 ));
+			insert_body := insert_item{body};
+			rest := insert_item{tail};
+		}
+	}
+	else if ( _sparql_starts_keyword( rest, "INSERT" ) ) {
+		let item := _sparql_extract_braced(substr( rest, 6 ));
+		insert_body := item{body};
+		rest := item{tail};
+	}
+	throw new SPARQLError(message: "SPARQL Update WHERE block expected")
+		unless _sparql_starts_keyword( rest, "WHERE" );
+	let where := _sparql_extract_braced(substr( rest, 5 ));
+	let bindings := _sparql_eval_group_text(
+		store,
+		where{body},
+		prefixes,
+		[ {} ],
+		with_info{graph},
+	);
+	let deleted := [];
+	if ( delete_body ne "" ) {
+		deleted := _sparql_update_construct_quads(
+			delete_body,
+			prefixes,
+			bindings,
+			with_info{graph},
+			true,
+		);
+		store.remove_quads(deleted);
+	}
+	let inserted := [];
+	if ( insert_body ne "" ) {
+		inserted := _sparql_update_construct_quads(
+			insert_body,
+			prefixes,
+			bindings,
+			with_info{graph},
+		);
+		store.add_quads(inserted);
+	}
+	return {
+		operation: "modify",
+		bindings: bindings.length(),
+		deleted: deleted.length(),
+		inserted: inserted.length(),
+	};
+}
+
+function _sparql_update_delete_where ( RDFStore store, String text,
+	Dict prefixes ) {
+	let body := _sparql_extract_braced(substr( text, 12 )){body};
+	let bindings := _sparql_eval_group_text( store, body, prefixes, [ {} ] );
+	let quads := _sparql_update_construct_quads(
+		body,
+		prefixes,
+		bindings,
+		null,
+		true,
+	);
+	store.remove_quads(quads);
+	return {
+		operation: "delete-where",
+		bindings: bindings.length(),
+		deleted: quads.length(),
+	};
+}
+
+function _sparql_update_operation ( RDFStore store, String operation,
+	Dict prefixes ) {
+	let clean := trim(operation);
+	let upper := uc(clean);
+	if ( _sparql_starts_keyword( upper, "INSERT DATA" ) ) {
+		return _sparql_update_data(
+			store,
+			trim(substr( clean, 11 )),
+			prefixes,
+			false,
+		);
+	}
+	if ( _sparql_starts_keyword( upper, "DELETE DATA" ) ) {
+		return _sparql_update_data(
+			store,
+			trim(substr( clean, 11 )),
+			prefixes,
+			true,
+		);
+	}
+	if ( _sparql_starts_keyword( upper, "DELETE WHERE" ) ) {
+		return _sparql_update_delete_where( store, clean, prefixes );
+	}
+	if ( _sparql_starts_keyword( upper, "CLEAR" ) ) {
+		let op := _sparql_update_silent({ text: clean, silent: false });
+		return _sparql_update_clear( store, op{text}, prefixes, "CLEAR", op{silent} );
+	}
+	if ( _sparql_starts_keyword( upper, "DROP" ) ) {
+		let op := _sparql_update_silent({ text: clean, silent: false });
+		return _sparql_update_clear( store, op{text}, prefixes, "DROP", op{silent} );
+	}
+	if ( _sparql_starts_keyword( upper, "CREATE" ) or
+		_sparql_starts_keyword( upper, "ADD" ) or
+		_sparql_starts_keyword( upper, "COPY" ) or
+		_sparql_starts_keyword( upper, "MOVE" )
+	) {
+		let keyword := split( upper, " ", 2 )[0];
+		let op := _sparql_update_silent({ text: clean, silent: false });
+		return _sparql_update_graph_management(
+			store,
+			op{text},
+			prefixes,
+			keyword,
+			op{silent},
+		);
+	}
+	if ( _sparql_starts_keyword( upper, "LOAD" ) ) {
+		let op := _sparql_update_silent({ text: clean, silent: false });
+		return _sparql_update_load( store, op{text}, prefixes, op{silent} );
+	}
+	if ( _sparql_starts_keyword( upper, "WITH" ) or
+		_sparql_starts_keyword( upper, "DELETE" ) or
+		_sparql_starts_keyword( upper, "INSERT" )
+	) {
+		return _sparql_update_modify( store, clean, prefixes );
+	}
+	throw new SPARQLError(message: "SPARQL Update operation not supported");
+}
+
+function sparql_update ( RDFStore store, String update ) {
+	let ast := sparql_parse_ast(update);
+	throw new SPARQLError(message: "SPARQL Update expected")
+		unless ast{type} eq "update";
+	let prep := _sparql_prefixes(update);
+	let operations := [];
+	return store.with_transaction(function ( tx ) {
+		for ( let operation in _sparql_split_update_operations(update) ) {
+			operations.push(_sparql_update_operation(
+				tx,
+				operation,
+				prep{prefixes},
+			));
+		}
+		return {
+			type: "update",
+			operations: operations,
+			count: operations.length(),
+		};
+	});
+}
+
+class SPARQLPreparedQuery {
+	let String source with get := "";
+	let ast with get := null;
+
+	method __build__ () {
+		ast := sparql_parse_ast(source);
+		throw new SPARQLError(message: "SPARQL query expected")
+			if ast{type} eq "update";
+	}
+
+	method execute ( RDFStore store, inherited_dataset := null ) {
+		return sparql_query( store, source, inherited_dataset );
+	}
+}
+
+class SPARQLPreparedUpdate {
+	let String source with get := "";
+	let ast with get := null;
+
+	method __build__ () {
+		ast := sparql_parse_ast(source);
+		throw new SPARQLError(message: "SPARQL Update expected")
+			unless ast{type} eq "update";
+	}
+
+	method execute ( RDFStore store ) {
+		return sparql_update( store, source );
+	}
+}
+
+function sparql_prepare_query ( String query ) {
+	return new SPARQLPreparedQuery(source: query);
+}
+
+function sparql_prepare_update ( String update ) {
+	return new SPARQLPreparedUpdate(source: update);
+}
+
+function sparql_validate ( String source ) {
+	try {
+		let ast := sparql_parse_ast(source);
+		return {
+			ok: true,
+			type: ast{type},
+			syntax: ast{syntax},
+			error: null,
+		};
+	}
+	catch ( Exception e ) {
+		return {
+			ok: false,
+			type: "",
+			syntax: "",
+			error: e.to_String(),
+		};
+	}
+}
+
+function sparql_diagnose ( RDFStore store, String source ) {
+	let validation := sparql_validate(source);
+	return validation unless validation{ok};
+	try {
+		let result := validation{type} eq "update"
+			? sparql_update( store, source )
+			: sparql_query( store, source );
+		validation{result} := result;
+		return validation;
+	}
+	catch ( Exception e ) {
+		validation{ok} := false;
+		validation{error} := e.to_String();
+		return validation;
+	}
+}
+
 function sparql_query ( RDFStore store, String query, inherited_dataset := null ) {
+	throw new SPARQLError(message: "SPARQL query expected; use sparql_update")
+		if _sparql_is_update_ast(query);
 	let parsed := _sparql_parse(query);
 	if ( inherited_dataset != null ) {
 		if ( parsed{dataset_default}.length() == 0 ) {

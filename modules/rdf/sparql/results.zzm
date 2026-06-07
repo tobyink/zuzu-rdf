@@ -1,0 +1,227 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/results - SPARQL result serializers.
+
+=head1 SYNOPSIS
+
+  from rdf/sparql/results import sparql_results_serialize;
+
+  let json := sparql_results_serialize(result, "json");
+
+
+=head1 DESCRIPTION
+
+This module serializes SPARQL C<SELECT> and C<ASK> result dictionaries to
+the W3C JSON, XML, CSV, and TSV result formats. Graph query results should
+be serialized with RDF graph serializers such as N-Triples or N-Quads.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_results_json(Dict result) >>
+
+Returns SPARQL Results JSON.
+
+=item C<< sparql_results_xml(Dict result) >>
+
+Returns SPARQL Results XML.
+
+=item C<< sparql_results_csv(Dict result) >>
+
+Returns SPARQL Results CSV.
+
+=item C<< sparql_results_tsv(Dict result) >>
+
+Returns SPARQL Results TSV.
+
+=item C<< sparql_results_serialize(Dict result, String format) >>
+
+Dispatches to one of the serializers. C<format> may be C<json>, C<xml>,
+C<csv>, or C<tsv>. Throws for unsupported formats.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/results >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/serializer/ntriples import _nt_term;
+from rdf/term import RDFBlank, RDFIRI, RDFLiteral;
+from std/data/json import JSON;
+from std/data/xml/escape import escape_xml;
+from std/string import join, replace;
+
+function _sparql_result_term_json ( term ) {
+	if ( term instanceof RDFIRI ) {
+		return { type: "uri", value: term.get_value() };
+	}
+	if ( term instanceof RDFBlank ) {
+		return { type: "bnode", value: term.get_value() };
+	}
+	if ( term instanceof RDFLiteral ) {
+		let out := { type: "literal", value: term.get_value() };
+		if ( term.get_lang() ne "" ) {
+			out{"xml:lang"} := term.get_lang();
+		}
+		else if ( term.get_datatype() != null ) {
+			out{datatype} := term.get_datatype().get_value();
+		}
+		return out;
+	}
+	return null;
+}
+
+function sparql_results_json ( Dict result ) {
+	if ( result{type} eq "ask" ) {
+		return ( new JSON(canonical: true) ).encode({
+			head: {},
+			boolean: result{boolean} ? true : false,
+		}) _ "\n";
+	}
+	let rows := [];
+	for ( let row in result{results} ) {
+		let binding := {};
+		for ( let var_name in result{variables} ) {
+			if ( row.get(var_name, null) != null ) {
+				binding.set(
+					var_name,
+					_sparql_result_term_json(row.get(var_name)),
+				);
+			}
+		}
+		rows.push(binding);
+	}
+	return ( new JSON(canonical: true) ).encode({
+		head: { vars: result{variables} },
+		results: { bindings: rows },
+	}) _ "\n";
+}
+
+function _sparql_xml_term ( String var_name, term ) {
+	let out := "<binding name=\"" _ escape_xml(var_name) _ "\">";
+	if ( term instanceof RDFIRI ) {
+		out _= "<uri>" _ escape_xml(term.get_value()) _ "</uri>";
+	}
+	else if ( term instanceof RDFBlank ) {
+		out _= "<bnode>" _ escape_xml(term.get_value()) _ "</bnode>";
+	}
+	else if ( term instanceof RDFLiteral ) {
+		out _= "<literal";
+		out _= " xml:lang=\"" _ escape_xml(term.get_lang()) _ "\""
+			if term.get_lang() ne "";
+		out _= " datatype=\"" _ escape_xml(term.get_datatype().get_value()) _
+			"\"" if term.get_lang() eq "" and term.get_datatype() != null;
+		out _= ">" _ escape_xml(term.get_value()) _ "</literal>";
+	}
+	out _= "</binding>";
+	return out;
+}
+
+function sparql_results_xml ( Dict result ) {
+	let out := "<?xml version=\"1.0\"?>\n" _
+		"<sparql xmlns=\"http://www.w3.org/2005/sparql-results#\">\n" _
+		"<head>";
+	if ( result{type} eq "select" ) {
+		for ( let var_name in result{variables} ) {
+			out _= "<variable name=\"" _ escape_xml(var_name) _ "\"/>";
+		}
+	}
+	out _= "</head>\n";
+	if ( result{type} eq "ask" ) {
+		out _= "<boolean>" _ ( result{boolean} ? "true" : "false" ) _
+			"</boolean>\n</sparql>\n";
+		return out;
+	}
+	out _= "<results>\n";
+	for ( let row in result{results} ) {
+		out _= "<result>";
+		for ( let var_name in result{variables} ) {
+			let term := row.get(var_name, null);
+			out _= _sparql_xml_term( var_name, term ) if term != null;
+		}
+		out _= "</result>\n";
+	}
+	out _= "</results>\n</sparql>\n";
+	return out;
+}
+
+function _csv_escape ( String text ) {
+	let needs_quote := text ~ /[",\r\n]/;
+	let out := replace( text, "\"", "\"\"", "g" );
+	return needs_quote ? "\"" _ out _ "\"" : out;
+}
+
+function _result_cell_csv ( term ) {
+	return "" if term == null;
+	return term.get_value() if term instanceof RDFIRI;
+	return "_:" _ term.get_value() if term instanceof RDFBlank;
+	return term.get_value() if term instanceof RDFLiteral;
+	return "";
+}
+
+function sparql_results_csv ( Dict result ) {
+	if ( result{type} eq "ask" ) {
+		return "boolean\n" _ ( result{boolean} ? "true" : "false" ) _ "\n";
+	}
+	let lines := [ join( ",", result{variables} ) ];
+	for ( let row in result{results} ) {
+		let cells := [];
+		for ( let var_name in result{variables} ) {
+			cells.push(_csv_escape(_result_cell_csv(row.get(var_name, null))));
+		}
+		lines.push(join( ",", cells ));
+	}
+	return join( "\n", lines ) _ "\n";
+}
+
+function _tsv_escape ( String text ) {
+	let out := replace( text, /\\/, "\\\\", "g" );
+	out := replace( out, "\t", "\\t", "g" );
+	out := replace( out, "\n", "\\n", "g" );
+	out := replace( out, "\r", "\\r", "g" );
+	return out;
+}
+
+function _result_cell_tsv ( term ) {
+	return "" if term == null;
+	return _tsv_escape(_nt_term(term));
+}
+
+function sparql_results_tsv ( Dict result ) {
+	if ( result{type} eq "ask" ) {
+		return "?boolean\n" _ ( result{boolean} ? "true" : "false" ) _ "\n";
+	}
+	let header := [];
+	for ( let var_name in result{variables} ) {
+		header.push("?" _ var_name);
+	}
+	let lines := [ join( "\t", header ) ];
+	for ( let row in result{results} ) {
+		let cells := [];
+		for ( let var_name in result{variables} ) {
+			cells.push(_result_cell_tsv(row.get(var_name, null)));
+		}
+		lines.push(join( "\t", cells ));
+	}
+	return join( "\n", lines ) _ "\n";
+}
+
+function sparql_results_serialize ( Dict result, String format ) {
+	let f := lc(format);
+	return sparql_results_xml(result) if f eq "xml";
+	return sparql_results_json(result) if f eq "json";
+	return sparql_results_csv(result) if f eq "csv";
+	return sparql_results_tsv(result) if f eq "tsv";
+	die "rdf: unsupported SPARQL result format '" _ format _ "'";
+}

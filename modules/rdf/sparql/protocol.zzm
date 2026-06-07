@@ -1,0 +1,183 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/sparql/protocol - SPARQL Protocol request handling.
+
+=head1 SYNOPSIS
+
+  from rdf/sparql/protocol import SPARQLProtocolEndpoint;
+
+  let endpoint := new SPARQLProtocolEndpoint(store: store);
+  let response := endpoint.handle({
+      params: { query: "ASK { ?s ?p ?o }" },
+      accept: "application/sparql-results+json",
+  });
+
+
+=head1 DESCRIPTION
+
+C<SPARQLProtocolEndpoint> implements the core request handling rules for
+the SPARQL Protocol. It accepts query or update strings from request
+dictionaries, decodes URL-encoded form bodies, performs content
+negotiation for supported result formats, and returns response
+dictionaries with C<status>, C<content_type>, and C<body>.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<SPARQLProtocolEndpoint>
+
+Construct with C<store>.
+
+=over
+
+=item C<< handle(Dict request) >>
+
+Handles one request. Recognised request fields include C<params>,
+C<body>, C<content_type>, C<accept>, C<query>, and C<update>. Returns a
+response dictionary. Query responses use status C<200>, successful updates
+use C<204>, client errors use C<400>, and execution errors use C<500>.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/protocol >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/serializer/nquads import NQuadsSerializer;
+from rdf/serializer/ntriples import NTriplesSerializer;
+from rdf/sparql import sparql_query, sparql_update;
+from rdf/sparql/results import sparql_results_serialize;
+from rdf/store import RDFStore;
+from std/net/url import unescape as _url_unescape;
+from std/string import contains, index, replace, split, substr;
+
+function _sparql_form_decode_part ( String value ) {
+	return _url_unescape(replace( value, /\+/, " ", "g" ));
+}
+
+function _sparql_protocol_form ( String body ) {
+	let out := {};
+	for ( let piece in split( body, "&" ) ) {
+		next if piece eq "";
+		let pos := index( piece, "=" );
+		let name := pos < 0
+			? _sparql_form_decode_part(piece)
+			: _sparql_form_decode_part(substr( piece, 0, pos ));
+		let value := pos < 0
+			? ""
+			: _sparql_form_decode_part(substr( piece, pos + 1 ));
+		out.set( name, value );
+	}
+	return out;
+}
+
+function _sparql_protocol_accept ( String accept, String fallback ) {
+	let lc_accept := lc(accept);
+	return "json" if contains( lc_accept, "application/sparql-results+json" ) or
+		contains( lc_accept, "application/json" );
+	return "xml" if contains( lc_accept, "application/sparql-results+xml" ) or
+		contains( lc_accept, "application/xml" );
+	return "csv" if contains( lc_accept, "text/csv" );
+	return "tsv" if contains( lc_accept, "text/tab-separated-values" );
+	return "nquads" if contains( lc_accept, "application/n-quads" ) or
+		contains( lc_accept, "text/x-nquads" );
+	return "ntriples" if contains( lc_accept, "application/n-triples" ) or
+		contains( lc_accept, "text/plain" );
+	return fallback;
+}
+
+function _sparql_protocol_type ( String format, String result_type ) {
+	return "application/sparql-results+json" if format eq "json";
+	return "application/sparql-results+xml" if format eq "xml";
+	return "text/csv" if format eq "csv";
+	return "text/tab-separated-values" if format eq "tsv";
+	return "application/n-quads" if format eq "nquads";
+	return "application/n-triples" if format eq "ntriples";
+	return result_type eq "update" ? "text/plain" : "application/sparql-results+json";
+}
+
+function _sparql_protocol_graph_body ( result, String format ) {
+	let quads := result{quads};
+	if ( format eq "ntriples" ) {
+		return ( new NTriplesSerializer() ).serialize(quads);
+	}
+	return ( new NQuadsSerializer() ).serialize(quads);
+}
+
+class SPARQLProtocolEndpoint {
+	let RDFStore store with get := null;
+
+	method handle ( Dict request ) {
+		let params := request.get( "params", {} );
+		let body := request.get( "body", "" );
+		let content_type := lc(request.get( "content_type", "" ));
+		let accept := request.get( "accept", "application/sparql-results+json" );
+		if ( contains( content_type, "application/x-www-form-urlencoded" ) ) {
+			let form := _sparql_protocol_form(body);
+			for ( let key in form.keys() ) {
+				params.set( key, form.get(key) );
+			}
+		}
+		let direct_query := request.get( "query", "" );
+		let direct_update := request.get( "update", "" );
+		let query := direct_query ne "" ? direct_query : params.get( "query", "" );
+		let update := direct_update ne "" ? direct_update : params.get( "update", "" );
+		if ( query ne "" and update ne "" ) {
+			return {
+				status: 400,
+				content_type: "text/plain",
+				body: "SPARQL Protocol request cannot include both query and update\n",
+			};
+		}
+		try {
+			if ( update ne "" ) {
+				sparql_update( store, update );
+				return { status: 204, content_type: "text/plain", body: "" };
+			}
+			if ( query ne "" ) {
+				let result := sparql_query( store, query );
+				let fallback := result{type} eq "select" or result{type} eq "ask"
+					? "json"
+					: "nquads";
+				let format := _sparql_protocol_accept( accept, fallback );
+				if ( result{type} eq "construct" or result{type} eq "describe" ) {
+					return {
+						status: 200,
+						content_type: _sparql_protocol_type( format, result{type} ),
+						body: _sparql_protocol_graph_body( result, format ),
+					};
+				}
+				return {
+					status: 200,
+					content_type: _sparql_protocol_type( format, result{type} ),
+					body: sparql_results_serialize( result, format ),
+				};
+			}
+			return {
+				status: 400,
+				content_type: "text/plain",
+				body: "SPARQL Protocol request needs query or update\n",
+			};
+		}
+		catch ( Exception e ) {
+			return {
+				status: 400,
+				content_type: "text/plain",
+				body: e.to_String() _ "\n",
+			};
+		}
+	}
+}

@@ -4,6 +4,40 @@
 
 rdf/sparql/lexer - SPARQL 1.1 tokeniser.
 
+=head1 SYNOPSIS
+
+  from rdf/sparql/lexer import sparql_lex;
+
+  let tokens := sparql_lex("SELECT * WHERE { ?s ?p ?o }");
+
+
+=head1 DESCRIPTION
+
+This module tokenises SPARQL 1.1 Query and Update source for the syntax
+parser. It is mostly intended for parser and diagnostic code. Tokens are
+dictionaries containing C<kind>, C<value>, C<line>, and C<column>.
+
+=head1 EXPORTS
+
+=head2 Functions
+
+=over
+
+=item C<< sparql_lex(String source) >>
+
+Returns an array of token dictionaries. Throws C<SPARQLError> for invalid
+lexical input.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/sparql/lexer >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from rdf/term import SPARQLError;

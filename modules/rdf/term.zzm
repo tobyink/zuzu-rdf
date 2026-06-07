@@ -4,6 +4,132 @@
 
 rdf/term - RDF terms and quads.
 
+=head1 SYNOPSIS
+
+  from rdf/term import rdf_iri, rdf_literal, rdf_quad;
+
+  let quad := rdf_quad(
+      rdf_iri("http://example.com/s"),
+      rdf_iri("http://example.com/p"),
+      rdf_literal("value"),
+  );
+
+
+=head1 DESCRIPTION
+
+This module defines value objects for RDF IRIs, blank nodes, literals,
+the default graph, and RDF quads. It also provides constructors and stable
+term keys suitable for comparison, hashing, storage, and test output.
+
+=head1 EXPORTS
+
+=head2 Constants
+
+=over
+
+=item C<RDF_NS>
+
+The RDF namespace IRI.
+
+=item C<XSD_NS>
+
+The XML Schema namespace IRI.
+
+=item C<DEFAULT_GRAPH_KEY>
+
+The canonical key used for the default graph.
+
+=back
+
+=head2 Classes
+
+=over
+
+=item C<RDFIRI>
+
+An RDF IRI term. Construct with C<new RDFIRI(value: iri)> or use
+C<rdf_iri>. C<get_value> returns the IRI string. C<to_String> returns
+the N-Triples-style angle-bracket form.
+
+=item C<RDFBlank>
+
+An RDF blank node term. C<get_value> returns the blank node label.
+
+=item C<RDFLiteral>
+
+An RDF literal term. C<get_value>, C<get_lang>, and C<get_datatype>
+return the lexical form, lowercased language tag, and datatype IRI. If no
+datatype is supplied, plain literals use C<xsd:string> and language
+literals use C<rdf:langString>.
+
+=item C<RDFDefaultGraph>
+
+The default graph marker used by quads when no graph is supplied.
+
+=item C<RDFQuad>
+
+A subject, predicate, object, and graph tuple. C<get_subject>,
+C<get_predicate>, C<get_object>, and C<get_graph> return the components.
+C<to_Array> returns them in quad order.
+
+=item C<RDFError>, C<RDFSyntaxError>, C<RDFStoreError>, C<SPARQLError>
+
+Exception classes used by the RDF parsers, store, and SPARQL modules.
+
+=back
+
+=head2 Functions
+
+=over
+
+=item C<< rdf_iri(String value) >>
+
+Returns an C<RDFIRI>.
+
+=item C<< rdf_blank(String value) >>
+
+Returns an C<RDFBlank>.
+
+=item C<< rdf_literal(value, String lang := "", datatype := null) >>
+
+Returns an C<RDFLiteral>. C<value> is stringified. C<lang> and
+C<datatype> are optional.
+
+=item C<< rdf_default_graph() >>
+
+Returns an C<RDFDefaultGraph>.
+
+=item C<< rdf_quad(subject, predicate, object, graph?) >>
+
+Returns an C<RDFQuad>. The graph defaults to C<rdf_default_graph()>.
+
+=item C<< rdf_term_kind(term) >>
+
+Returns C<iri>, C<blank>, C<literal>, or C<default>. Throws if C<term>
+is not an RDF term.
+
+=item C<< rdf_term_key(term) >>
+
+Returns a stable string key for exact term identity.
+
+=item C<< rdf_term_hash(term) >>
+
+Returns a SHA-256 hash of C<rdf_term_key(term)>.
+
+=item C<< rdf_term_equals(left, right) >>
+
+Returns true when two RDF terms have the same key.
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/term >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
 =cut
 
 from std/digest/sha import sha256_hex;
