@@ -1,0 +1,642 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/cli - Shared RDF command-line helpers.
+
+=head1 DESCRIPTION
+
+Internal helpers used by the RDF distribution's command-line scripts.
+
+=cut
+
+from rdf/parser/ntriples import NTriplesParser;
+from rdf/parser/nquads import NQuadsParser;
+from rdf/parser/rdfxml import RdfXmlParser;
+from rdf/parser/trig import TriGParser;
+from rdf/parser/turtle import TurtleParser;
+from rdf/serializer/ntriples import NTriplesSerializer;
+from rdf/serializer/nquads import NQuadsSerializer;
+from rdf/serializer/rdfxml import RdfXmlSerializer;
+from rdf/serializer/trig import TriGSerializer;
+from rdf/serializer/turtle import TurtleSerializer;
+from rdf/sparql import sparql_query;
+from rdf/sparql/results import sparql_results_serialize;
+from rdf/store import RDFStore;
+from rdf/term import RDFDefaultGraph, rdf_iri, rdf_quad;
+from std/db import DB;
+from std/getopt import Getopt;
+from std/internals import ansi_esc, load_module;
+from std/io import Path, STDERR, STDIN, STDOUT;
+from std/string import contains, join, rindex, substr, trim;
+
+const RDF_CLI_DEFAULT_STORE := "rdf/store.RDFStore";
+const RDF_CLI_DEFAULT_SERIALIZER :=
+	"rdf/serializer/ntriples.NTriplesSerializer";
+const RDF_CLI_DEFAULT_GRAPH_SERIALIZER :=
+	"rdf/serializer/nquads.NQuadsSerializer";
+
+function _rdf_cli_parser_shortcuts () {
+	return {
+		xml: "rdf/parser/rdfxml.RdfXmlParser",
+		turtle: "rdf/parser/turtle.TurtleParser",
+		trig: "rdf/parser/trig.TriGParser",
+		ntriples: "rdf/parser/ntriples.NTriplesParser",
+		nquads: "rdf/parser/nquads.NQuadsParser",
+	};
+}
+
+function _rdf_cli_serializer_shortcuts () {
+	return {
+		"xml-out": "rdf/serializer/rdfxml.RdfXmlSerializer",
+		"turtle-out": "rdf/serializer/turtle.TurtleSerializer",
+		"trig-out": "rdf/serializer/trig.TriGSerializer",
+		"ntriples-out": "rdf/serializer/ntriples.NTriplesSerializer",
+		"nquads-out": "rdf/serializer/nquads.NQuadsSerializer",
+	};
+}
+
+function _rdf_cli_result_shortcuts () {
+	return {
+		"json-results": "json",
+		"xml-results": "xml",
+		"csv-results": "csv",
+		"tsv-results": "tsv",
+	};
+}
+
+function rdf_cli_parse_usage () {
+	return join( "\n", [
+		"Usage: parse_rdf.zzs [options] [file ...]",
+		"",
+		"Parser options:",
+		"  --parser MODULE.CLASS  Load a parser class dynamically",
+		"  --xml                  Use the built-in RDF/XML parser",
+		"  --turtle               Use the built-in Turtle parser",
+		"  --trig                 Use the built-in TriG parser",
+		"  --ntriples             Use the built-in N-Triples parser",
+		"  --nquads               Use the built-in N-Quads parser",
+		"  --base URI             Base URI for resolving relative IRIs",
+		"  --graph IRI            Load default-graph triples into a named graph",
+		"",
+		"Store options:",
+		"  --store MODULE.CLASS   Store class, default rdf/store.RDFStore",
+		"  --dsn DSN              Connect to a database DSN",
+		"  --sqlite FILE          Open a SQLite store file",
+		"  --backend BACKEND      Store backend label: sqlite, mysql, postgresql",
+		"  --replace              Drop and recreate the store schema before loading",
+		"  --no-install-schema    Verify an existing schema instead of installing it",
+		"",
+		"Output options:",
+		"  --stdout               Serialize the store to STDOUT after parsing",
+		"  --output FILE          Serialize the store to FILE after parsing",
+		"  --serializer MODULE.CLASS",
+		"                         Load a serializer class dynamically",
+		"  --prefix NAME=IRI      Add a serializer namespace prefix",
+		"  --xml-out              Serialize as RDF/XML",
+		"  --turtle-out           Serialize as Turtle",
+		"  --trig-out             Serialize as TriG",
+		"  --ntriples-out         Serialize as N-Triples",
+		"  --nquads-out           Serialize as N-Quads",
+		"  -q, --quiet            Suppress parse count output",
+		"  -h, --help             Show this help",
+	] ) _ "\n";
+}
+
+function rdf_cli_serialize_usage () {
+	return join( "\n", [
+		"Usage: serialize_rdf.zzs [options]",
+		"",
+		"Store options:",
+		"  --store MODULE.CLASS   Store class, default rdf/store.RDFStore",
+		"  --dsn DSN              Connect to a database DSN",
+		"  --sqlite FILE          Open a SQLite store file",
+		"  --backend BACKEND      Store backend label: sqlite, mysql, postgresql",
+		"",
+		"Output options:",
+		"  --stdout               Serialize the store to STDOUT",
+		"  --output FILE          Serialize the store to FILE",
+		"  --serializer MODULE.CLASS",
+		"                         Load a serializer class dynamically",
+		"  --prefix NAME=IRI      Add a serializer namespace prefix",
+		"  --xml-out              Serialize as RDF/XML",
+		"  --turtle-out           Serialize as Turtle",
+		"  --trig-out             Serialize as TriG",
+		"  --ntriples-out         Serialize as N-Triples",
+		"  --nquads-out           Serialize as N-Quads",
+		"  -h, --help             Show this help",
+	] ) _ "\n";
+}
+
+function rdf_cli_query_usage () {
+	return join( "\n", [
+		"Usage: query_rdf.zzs [options] [rdf-file | - ...]",
+		"",
+		"Query options:",
+		"  --query SPARQL         Query text to run",
+		"  --query-file FILE      Read query text from FILE",
+		"",
+		"Parser options:",
+		"  --parser MODULE.CLASS  Load a parser class dynamically",
+		"  --xml                  Use the built-in RDF/XML parser",
+		"  --turtle               Use the built-in Turtle parser",
+		"  --trig                 Use the built-in TriG parser",
+		"  --ntriples             Use the built-in N-Triples parser",
+		"  --nquads               Use the built-in N-Quads parser",
+		"  --base URI             Base URI for resolving relative IRIs",
+		"  --graph IRI            Load default-graph triples into a named graph",
+		"",
+		"Store options:",
+		"  --store MODULE.CLASS   Store class, default rdf/store.RDFStore",
+		"  --dsn DSN              Connect to a database DSN",
+		"  --sqlite FILE          Open a SQLite store file",
+		"  --backend BACKEND      Store backend label: sqlite, mysql, postgresql",
+		"  --replace              Drop and recreate the store schema before loading",
+		"  --no-install-schema    Verify an existing schema instead of installing it",
+		"",
+		"Output options:",
+		"  --stdout               Write query results to STDOUT",
+		"  --output FILE          Write query results to FILE",
+		"  --results FORMAT       SELECT/ASK format: json, xml, csv, tsv",
+		"  --json-results         Serialize SELECT/ASK as JSON",
+		"  --xml-results          Serialize SELECT/ASK as XML",
+		"  --csv-results          Serialize SELECT/ASK as CSV",
+		"  --tsv-results          Serialize SELECT/ASK as TSV",
+		"  --serializer MODULE.CLASS",
+		"                         Load a graph-result serializer dynamically",
+		"  --prefix NAME=IRI      Add a graph-result serializer namespace prefix",
+		"  --xml-out              Serialize graph results as RDF/XML",
+		"  --turtle-out           Serialize graph results as Turtle",
+		"  --trig-out             Serialize graph results as TriG",
+		"  --ntriples-out         Serialize graph results as N-Triples",
+		"  --nquads-out           Serialize graph results as N-Quads",
+		"  -q, --quiet            Suppress parse count output",
+		"  -h, --help             Show this help",
+	] ) _ "\n";
+}
+
+function _rdf_cli_specs () {
+	return [
+		"help|h",
+		"query=s",
+		"query-file=s",
+		"parser=s",
+		"xml",
+		"turtle",
+		"trig",
+		"ntriples",
+		"nquads",
+		"base=s",
+		"graph=s",
+		"store=s",
+		"dsn=s",
+		"sqlite=s",
+		"backend=s",
+		"replace",
+		"no-install-schema",
+		"stdout",
+		"output=s",
+		"results=s",
+		"json-results",
+		"xml-results",
+		"csv-results",
+		"tsv-results",
+		"serializer=s",
+		"prefix=s@",
+		"xml-out",
+		"turtle-out",
+		"trig-out",
+		"ntriples-out",
+		"nquads-out",
+		"quiet|q",
+	];
+}
+
+function _rdf_cli_load_class ( String spec ) {
+	let dot := rindex( spec, "." );
+	die "rdf: class spec must be MODULE.CLASS: " _ spec
+		if dot <= 0 or dot >= length spec - 1;
+	return load_module( substr( spec, 0, dot ), substr( spec, dot + 1 ) );
+}
+
+function _rdf_cli_selected_spec (
+	Dict opts,
+	String explicit,
+	Dict shortcuts,
+	String label,
+	default_spec := null,
+) {
+	let selected := [];
+	selected.push( "" _ opts.get(explicit) ) if opts.get(explicit) != null;
+	for ( let name in shortcuts.keys() ) {
+		selected.push( shortcuts.get(name) ) if opts.get(name);
+	}
+	die "rdf: choose only one " _ label if selected.length() > 1;
+	return selected.length() == 0 ? default_spec : selected[0];
+}
+
+function rdf_cli_parser_spec ( Dict opts ) {
+	return _rdf_cli_selected_spec(
+		opts,
+		"parser",
+		_rdf_cli_parser_shortcuts(),
+		"parser",
+		null,
+	);
+}
+
+function rdf_cli_serializer_spec ( Dict opts ) {
+	return _rdf_cli_selected_spec(
+		opts,
+		"serializer",
+		_rdf_cli_serializer_shortcuts(),
+		"serializer",
+		RDF_CLI_DEFAULT_SERIALIZER,
+	);
+}
+
+function rdf_cli_graph_serializer_spec ( Dict opts ) {
+	return _rdf_cli_selected_spec(
+		opts,
+		"serializer",
+		_rdf_cli_serializer_shortcuts(),
+		"serializer",
+		RDF_CLI_DEFAULT_GRAPH_SERIALIZER,
+	);
+}
+
+function rdf_cli_results_format ( Dict opts ) {
+	return _rdf_cli_selected_spec(
+		opts,
+		"results",
+		_rdf_cli_result_shortcuts(),
+		"result format",
+		"json",
+	);
+}
+
+function _rdf_cli_has_result_option ( Dict opts ) {
+	return true if opts{results} != null;
+	for ( let name in _rdf_cli_result_shortcuts().keys() ) {
+		return true if opts.get(name);
+	}
+	return false;
+}
+
+function _rdf_cli_has_graph_output_option ( Dict opts ) {
+	return true if opts{serializer} != null or opts{prefix} != null;
+	for ( let name in _rdf_cli_serializer_shortcuts().keys() ) {
+		return true if opts.get(name);
+	}
+	return false;
+}
+
+function _rdf_cli_has_query_option ( Dict opts ) {
+	return opts{query} != null or opts{"query-file"} != null or
+		_rdf_cli_has_result_option(opts);
+}
+
+function rdf_cli_prefixes ( Dict opts ) {
+	let out := {};
+	let raw := opts{prefix};
+	return out if raw == null;
+	let values := raw instanceof Array ? raw : [ raw ];
+	for ( let item in values ) {
+		let text := "" _ item;
+		let equals_at := rindex( text, "=" );
+		die "rdf: --prefix expects NAME=IRI" if equals_at <= 0;
+		let name := substr( text, 0, equals_at );
+		let iri := substr( text, equals_at + 1 );
+		die "rdf: bad prefix name " _ name
+			unless name ~ /^[A-Za-z_][A-Za-z0-9_-]*$/;
+		die "rdf: --prefix IRI cannot be empty" if iri eq "";
+		out.set( name, iri );
+	}
+	return out;
+}
+
+function rdf_cli_new_parser ( String spec ) {
+	let klass := _rdf_cli_load_class(spec);
+	return new klass();
+}
+
+function _rdf_cli_serializer_supports_prefixes ( String spec ) {
+	return true if spec in [
+		"rdf/serializer/turtle.TurtleSerializer",
+		"rdf/serializer/trig.TriGSerializer",
+		"rdf/serializer/rdfxml.RdfXmlSerializer",
+	];
+	return false if spec in [
+		"rdf/serializer/ntriples.NTriplesSerializer",
+		"rdf/serializer/nquads.NQuadsSerializer",
+	];
+	return true;
+}
+
+function rdf_cli_new_serializer ( String spec, Dict prefixes := {} ) {
+	die "rdf: --prefix requires a namespace-aware serializer"
+		if prefixes.length() > 0 and not _rdf_cli_serializer_supports_prefixes(spec);
+	let klass := _rdf_cli_load_class(spec);
+	return prefixes.length() > 0
+		? new klass(namespaces: prefixes)
+		: new klass();
+}
+
+function rdf_cli_make_store ( Dict opts, Boolean for_loading ) {
+	die "rdf: --dsn and --sqlite cannot be combined"
+		if opts{dsn} != null and opts{sqlite} != null;
+	die "rdf: --replace and --no-install-schema cannot be combined"
+		if opts{replace} and opts{"no-install-schema"};
+
+	let store_spec := opts{store} == null
+		? RDF_CLI_DEFAULT_STORE
+		: "" _ opts{store};
+	let klass := _rdf_cli_load_class(store_spec);
+	let dbh := opts{dsn} != null
+		? DB.connect( "" _ opts{dsn} )
+		: opts{sqlite} != null
+			? DB.open( new Path( "" _ opts{sqlite} ) )
+			: DB.temp();
+
+	let store := opts{backend} == null
+		? new klass(dbh: dbh)
+		: new klass( dbh: dbh, backend: "" _ opts{backend} );
+
+	if ( for_loading and opts{replace} ) {
+		store.drop_schema();
+		store.install_schema();
+	}
+	else if ( for_loading and opts{"no-install-schema"} ) {
+		store.verify_schema();
+	}
+	else if ( for_loading or ( opts{dsn} == null and opts{sqlite} == null ) ) {
+		store.install_schema();
+	}
+	else {
+		store.verify_schema();
+	}
+	return store;
+}
+
+function rdf_cli_read_stdin () {
+	let chunks := [];
+	while ( true ) {
+		let line := STDIN.next_line();
+		last if line == null;
+		chunks.push(line);
+	}
+	return join( "", chunks );
+}
+
+function rdf_cli_sniff_parser_spec ( String text ) {
+	let sample := trim( substr( text, 0, length text > 4096 ? 4096 : length text ) );
+	if (
+		sample ~ /^<\?xml\b/i or
+		sample ~ /^<rdf:RDF\b/i or
+		contains( sample, "<rdf:RDF" ) or
+		( contains( sample, "rdf-syntax-ns#" ) and contains( sample, "<" ) )
+	) {
+		return "rdf/parser/rdfxml.RdfXmlParser";
+	}
+	return "rdf/parser/turtle.TurtleParser";
+}
+
+function _rdf_cli_apply_graph ( Array quads, graph ) {
+	return quads if graph == null;
+	let graph_term := rdf_iri( "" _ graph );
+	let out := [];
+	for ( let quad in quads ) {
+		if ( quad.get_graph() instanceof RDFDefaultGraph ) {
+			out.push(rdf_quad(
+				quad.get_subject(),
+				quad.get_predicate(),
+				quad.get_object(),
+				graph_term,
+			));
+		}
+		else {
+			out.push(quad);
+		}
+	}
+	return out;
+}
+
+function rdf_cli_parse_input (
+	store,
+	parser_spec,
+	String label,
+	String text,
+	base := null,
+	graph := null,
+) {
+	let actual_spec := parser_spec == null
+		? rdf_cli_sniff_parser_spec(text)
+		: parser_spec;
+	let parser := rdf_cli_new_parser(actual_spec);
+	let quads := base == null
+		? parser.parse_string(text)
+		: parser.parse_string( text, base: "" _ base );
+	die "rdf: parser did not return an Array for " _ label
+		unless quads instanceof Array;
+	quads := _rdf_cli_apply_graph( quads, graph );
+	store.add_quads_bulk(quads);
+	return quads.length();
+}
+
+function rdf_cli_emit_counts ( Array counts ) {
+	let cyan := ansi_esc() _ "[36m";
+	let reset := ansi_esc() _ "[0m";
+	for ( let row in counts ) {
+		STDERR.say(
+			cyan _ row{label} _ ": " _ row{count} _
+			" statements read" _ reset,
+		);
+	}
+}
+
+function rdf_cli_write_output ( String text, output ) {
+	if ( output != null ) {
+		( new Path( "" _ output ) ).spew_utf8(text);
+	}
+	else {
+		STDOUT.print(text);
+	}
+}
+
+function rdf_cli_dump_store ( store, Dict opts ) {
+	let serializer_spec := rdf_cli_serializer_spec(opts);
+	let serializer := rdf_cli_new_serializer(
+		serializer_spec,
+		rdf_cli_prefixes(opts),
+	);
+	return serializer.serialize(store.find());
+}
+
+function rdf_cli_read_query ( Dict opts ) {
+	die "rdf: choose only one query source"
+		if opts{query} != null and opts{"query-file"} != null;
+	die "rdf: --query or --query-file is required"
+		if opts{query} == null and opts{"query-file"} == null;
+	return "" _ opts{query} if opts{query} != null;
+	return ( new Path( "" _ opts{"query-file"} ) ).slurp_utf8();
+}
+
+function rdf_cli_load_inputs ( store, Dict opts, Array argv ) {
+	let parser_spec := rdf_cli_parser_spec(opts);
+	let counts := [];
+	if ( "-" in argv and argv.length() > 1 ) {
+		die "rdf: - can only be used by itself";
+	}
+	for ( let file in argv ) {
+		let label := "" _ file;
+		let text := label eq "-"
+			? rdf_cli_read_stdin()
+			: ( new Path(label) ).slurp_utf8();
+		counts.push({
+			label: label eq "-" ? "<stdin>" : label,
+			count: rdf_cli_parse_input(
+				store,
+				parser_spec,
+				label eq "-" ? "<stdin>" : label,
+				text,
+				opts{base},
+				opts{graph},
+			),
+		});
+	}
+	return counts;
+}
+
+function rdf_cli_query_output ( Dict result, Dict opts ) {
+	if ( result{type} eq "select" or result{type} eq "ask" ) {
+		die "rdf: graph serializer options are not accepted for SELECT/ASK"
+			if _rdf_cli_has_graph_output_option(opts);
+		return sparql_results_serialize( result, rdf_cli_results_format(opts) );
+	}
+	if ( result{type} eq "construct" or result{type} eq "describe" ) {
+		die "rdf: SPARQL result-set options are not accepted for graph results"
+			if _rdf_cli_has_result_option(opts);
+		let serializer_spec := rdf_cli_graph_serializer_spec(opts);
+		let serializer := rdf_cli_new_serializer(
+			serializer_spec,
+			rdf_cli_prefixes(opts),
+		);
+		return serializer.serialize(result{quads});
+	}
+	die "rdf: unsupported SPARQL query result type '" _ result{type} _ "'";
+}
+
+function _rdf_cli_validate_output_options ( Dict opts ) {
+	die "rdf: --stdout and --output cannot be combined"
+		if opts{stdout} and opts{output} != null;
+}
+
+function rdf_cli_parse_main ( argv ) {
+	let parsed := Getopt.parse( argv, _rdf_cli_specs() );
+	if ( not parsed{ok} ) {
+		STDERR.say(parsed{error});
+		STDERR.print(rdf_cli_parse_usage());
+		return 2;
+	}
+
+	let opts := parsed{options};
+	if ( opts{help} ) {
+		STDOUT.print(rdf_cli_parse_usage());
+		return 0;
+	}
+	_rdf_cli_validate_output_options(opts);
+	die "rdf: query options are not accepted by parse_rdf.zzs"
+		if _rdf_cli_has_query_option(opts);
+
+	let store := rdf_cli_make_store( opts, true );
+	let counts := [];
+
+	if ( parsed{argv}.length() == 0 ) {
+		let text := rdf_cli_read_stdin();
+		counts.push({
+			label: "<stdin>",
+			count: rdf_cli_parse_input(
+				store,
+				rdf_cli_parser_spec(opts),
+				"<stdin>",
+				text,
+				opts{base},
+				opts{graph},
+			),
+		});
+	}
+	else {
+		counts := rdf_cli_load_inputs( store, opts, parsed{argv} );
+	}
+
+	if ( opts{stdout} or opts{output} != null ) {
+		rdf_cli_write_output( rdf_cli_dump_store( store, opts ), opts{output} );
+	}
+	rdf_cli_emit_counts(counts) unless opts{quiet};
+	return 0;
+}
+
+function rdf_cli_serialize_main ( argv ) {
+	let parsed := Getopt.parse( argv, _rdf_cli_specs() );
+	if ( not parsed{ok} ) {
+		STDERR.say(parsed{error});
+		STDERR.print(rdf_cli_serialize_usage());
+		return 2;
+	}
+
+	let opts := parsed{options};
+	if ( opts{help} ) {
+		STDOUT.print(rdf_cli_serialize_usage());
+		return 0;
+	}
+	die "rdf: serialize_rdf.zzs does not accept input files"
+		if parsed{argv}.length() > 0;
+	die "rdf: query options are not accepted by serialize_rdf.zzs"
+		if _rdf_cli_has_query_option(opts);
+	die "rdf: parser options are not accepted by serialize_rdf.zzs"
+		if rdf_cli_parser_spec(opts) != null;
+	die "rdf: parse-only options are not accepted by serialize_rdf.zzs"
+		if opts{base} != null or opts{graph} != null or
+		opts{replace} or opts{"no-install-schema"};
+	_rdf_cli_validate_output_options(opts);
+
+	let store := rdf_cli_make_store( opts, false );
+	rdf_cli_write_output( rdf_cli_dump_store( store, opts ), opts{output} );
+	return 0;
+}
+
+function rdf_cli_query_main ( argv ) {
+	let parsed := Getopt.parse( argv, _rdf_cli_specs() );
+	if ( not parsed{ok} ) {
+		STDERR.say(parsed{error});
+		STDERR.print(rdf_cli_query_usage());
+		return 2;
+	}
+
+	let opts := parsed{options};
+	if ( opts{help} ) {
+		STDOUT.print(rdf_cli_query_usage());
+		return 0;
+	}
+	_rdf_cli_validate_output_options(opts);
+	let query := rdf_cli_read_query(opts);
+	let has_inputs := parsed{argv}.length() > 0;
+	if ( not has_inputs ) {
+		die "rdf: query_rdf.zzs needs RDF inputs or --dsn/--sqlite"
+			if opts{dsn} == null and opts{sqlite} == null;
+		die "rdf: parser options require RDF input files"
+			if rdf_cli_parser_spec(opts) != null or opts{base} != null or
+			opts{graph} != null;
+		die "rdf: parse-only options require RDF input files"
+			if opts{replace} or opts{"no-install-schema"};
+	}
+
+	let store := rdf_cli_make_store( opts, has_inputs );
+	let counts := has_inputs
+		? rdf_cli_load_inputs( store, opts, parsed{argv} )
+		: [];
+	let result := sparql_query( store, query );
+	rdf_cli_write_output( rdf_cli_query_output( result, opts ), opts{output} );
+	rdf_cli_emit_counts(counts) if has_inputs and not opts{quiet};
+	return 0;
+}

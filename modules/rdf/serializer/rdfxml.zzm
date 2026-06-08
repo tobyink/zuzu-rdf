@@ -58,6 +58,7 @@ License version 2.
 
 from rdf/ns import RDF_NS, RDFS_NS, XSD_NS;
 from rdf/prefix import RDFPrefixRegistry;
+from rdf/serializer import RdfSerializer;
 from rdf/serializer/plan import rdf_serializer_plan;
 from rdf/term import
 	RDFBlank,
@@ -94,7 +95,7 @@ function _rdfxml_resource_item ( term ) {
 	return term instanceof RDFIRI or term instanceof RDFBlank;
 }
 
-class RdfXmlSerializer {
+class RdfXmlSerializer with RdfSerializer {
 	let Dict namespaces with get := {};
 	let String indent with get := "\t";
 	let Array labelling with get := [];
@@ -376,9 +377,4 @@ class RdfXmlSerializer {
 			"</rdf:RDF>\n";
 	}
 
-	method serialize_each ( Array quads, Function emit ) {
-		let text := self.serialize(quads);
-		emit(text) if text ne "";
-		return self;
-	}
 }

@@ -1,0 +1,92 @@
+from test/more import *;
+
+from rdf import
+	RDF_NS,
+	RdfSerializer,
+	TriGParser,
+	TriGSerializer,
+	rdf_datasets_isomorphic,
+	rdf_iri,
+	rdf_literal,
+	rdf_quad;
+
+function _count_in_graph ( Array quads, graph ) {
+	let count := 0;
+	for ( let quad in quads ) {
+		count++ if quad.get_graph().to_String() eq graph.to_String();
+	}
+	return count;
+}
+
+let parser := new TriGParser();
+let quads := parser.parse_string("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "default" .
+{ ex:wrapped ex:p "wrapped default" }
+GRAPH ex:g { ex:s ex:p "keyword graph" }
+ex:h { ex:s ex:p "bare graph" }
+_:g { ex:s ex:p "blank graph" }
+GRAPH ex:list { ex:s ex:p ( "a" "b" ) . }
+""");
+
+is( quads.length(), 10, "TriG parses default, named, blank, and list graph blocks" );
+is(
+	_count_in_graph( quads, rdf_iri("http://example.com/g") ),
+	1,
+	"TriG parses GRAPH keyword named graph",
+);
+is(
+	_count_in_graph( quads, rdf_iri("http://example.com/h") ),
+	1,
+	"TriG parses named graph without GRAPH keyword",
+);
+is(
+	_count_in_graph( quads, rdf_iri("http://example.com/list") ),
+	5,
+	"TriG expands RDF collections inside the named graph",
+);
+
+let ex_s := rdf_iri("http://example.com/s");
+let ex_p := rdf_iri("http://example.com/p");
+let ex_g := rdf_iri("http://example.com/g");
+let sample := [
+	rdf_quad( ex_s, ex_p, rdf_literal("default") ),
+	rdf_quad( ex_s, rdf_iri(RDF_NS _ "type"), rdf_iri("http://example.com/T") ),
+	rdf_quad( ex_s, ex_p, rdf_literal("named"), ex_g ),
+];
+
+let serializer := new TriGSerializer(namespaces: {
+	ex: "http://example.com/",
+});
+ok( serializer does RdfSerializer, "TriG serializer composes RdfSerializer trait" );
+let text := serializer.serialize(sample);
+
+unlike( text, /^\{/, "TriG serializer leaves default graph unwrapped by default" );
+like(
+	text,
+	/GRAPH <http:\/\/example\.com\/g>\n\{/,
+	"TriG serializer uses GRAPH keyword for named graphs by default",
+);
+ok(
+	rdf_datasets_isomorphic( parser.parse_string(text), sample ),
+	"TriG serializer output parses back to the same dataset",
+);
+
+let wrapped := ( new TriGSerializer(
+	namespaces: { ex: "http://example.com/" },
+	wrap_default: true,
+) ).serialize(sample);
+like( wrapped, /(^|\n)\{\n/, "TriG serializer can wrap the default graph" );
+
+let bare_graphs := ( new TriGSerializer(
+	namespaces: { ex: "http://example.com/" },
+	graph_keyword: false,
+) ).serialize(sample);
+unlike( bare_graphs, /GRAPH /, "TriG serializer can omit GRAPH keyword" );
+like(
+	bare_graphs,
+	/<http:\/\/example\.com\/g>\n\{/,
+	"TriG serializer writes bare named graph labels when requested",
+);
+
+done_testing();

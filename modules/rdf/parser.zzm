@@ -1,0 +1,85 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/parser - shared RDF parser trait.
+
+=head1 SYNOPSIS
+
+  from rdf/parser import RdfParser;
+
+=head1 DESCRIPTION
+
+C<RdfParser> provides the common parser entry points used by the RDF
+parser classes. Classes compose the trait and implement C<parse_string>.
+
+=head1 EXPORTS
+
+=head2 Traits
+
+=over
+
+=item C<RdfParser>
+
+=over
+
+=item C<< parse_string(String text, ... options) >>
+
+Placeholder parser method. Classes using this trait should override it.
+
+=item C<< parse_file(path, ... options) >>
+
+Reads UTF-8 from C<path> and parses it.
+
+=item C<< parse_lines(Array lines, ... options) >>
+
+Parses concatenated line chunks.
+
+=item C<< parse_chunks(Array chunks, ... options) >>
+
+Parses concatenated string or nested-array chunks.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/parser >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+function _rdf_parser_concat_chunks ( Array chunks ) {
+	let text := "";
+	for ( let chunk in chunks ) {
+		if ( chunk instanceof Array ) {
+			text _= _rdf_parser_concat_chunks(chunk);
+		}
+		else {
+			text _= chunk;
+		}
+	}
+	return text;
+}
+
+trait RdfParser {
+	method parse_string ( String text, ... PairList options ) {
+		die "Unimplemented";
+	}
+
+	method parse_file ( path, ... PairList options ) {
+		return self.parse_string(path.slurp_utf8(), ...options);
+	}
+
+	method parse_lines ( Array lines, ... PairList options ) {
+		return self.parse_string(_rdf_parser_concat_chunks(lines), ...options);
+	}
+
+	method parse_chunks ( Array chunks, ... PairList options ) {
+		return self.parse_string(_rdf_parser_concat_chunks(chunks), ...options);
+	}
+}

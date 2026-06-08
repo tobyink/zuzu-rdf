@@ -1,0 +1,17 @@
+#!/usr/bin/env zuzu
+
+from rdf/cli import rdf_cli_query_main;
+from std/io import STDERR;
+from std/proc import Proc;
+
+function __main__ ( argv ) {
+	let status := 0;
+	try {
+		status := rdf_cli_query_main(argv);
+	}
+	catch ( Exception e ) {
+		STDERR.say(e.to_String());
+		status := 1;
+	};
+	Proc.exit(status);
+}

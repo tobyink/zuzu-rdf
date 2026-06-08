@@ -7,6 +7,8 @@ and this project roughly adheres to [Semantic Versioning](https://semver.org/spe
 
 ## [Unreleased]
 
+## 0.0.2 - 2026-06-08
+
 ### Added
 
 - Turtle support for object lists, predicate-object lists, blank-node
@@ -64,11 +66,28 @@ and this project roughly adheres to [Semantic Versioning](https://semver.org/spe
 - Pretty Turtle serializer with reusable serializer planning for subject
   ordering, predicate ordering, RDF list detection, and safe blank-node
   nesting.
+- TriG parser and pretty serializer for RDF datasets, including default
+  RDF 1.1 example-3 style output plus `wrap_default` and `graph_keyword`
+  serializer options, and author-gated W3C RDF 1.1 TriG tests.
 - Pretty RDF/XML serializer using the shared serializer planning for typed
   node elements, configured labelling predicates, collection parseType
   output, and safe blank-node nesting.
 - `RDFStore.temp()` convenience constructor for temporary `std/db` backed
   stores.
+- `parse_rdf.zzs` and `serialize_rdf.zzs` scripts for loading RDF into
+  temporary, DSN-backed, or SQLite-backed stores and serializing them with
+  built-in or dynamically loaded parser and serializer classes.
+- RDF CLI options for base URIs, named-graph loading, serializer prefixes,
+  quiet parse summaries, replacing existing stores, and verifying existing
+  schemas without installing them.
+- Shared `RdfParser` trait for parser `parse_file`, `parse_lines`, and
+  `parse_chunks` wrappers.
+- Shared `RdfSerializer` trait for serializer `serialize` and
+  `serialize_each` methods.
+- Store-level `serialize` and `serialize_to` convenience methods,
+  defaulting to N-Quads when no serializer object is supplied.
+- `query_rdf.zzs` script for running SPARQL queries against existing
+  stores or temporary stores loaded from RDF input files.
 
 ### Fixed
 

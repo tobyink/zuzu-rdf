@@ -1,0 +1,112 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer/trig - Pretty TriG serializer.
+
+=head1 SYNOPSIS
+
+  from rdf/serializer/trig import TriGSerializer;
+  
+  let text := (new TriGSerializer()).serialize(quads);
+
+=head1 DESCRIPTION
+
+C<TriGSerializer> serializes RDF datasets as RDF 1.1 TriG. It is based
+on the pretty Turtle serializer, so graph contents use the same prefix,
+QName, predicate ordering, RDF list, and blank-node nesting behaviour.
+
+By default, default-graph triples are serialized without wrapping braces,
+and named graphs are serialized using the C<GRAPH> keyword. These
+defaults match the shape shown in example 3 of section 2.2 of the RDF
+1.1 TriG specification. Pass C<wrap_default: true> to wrap the default
+graph in braces, or C<graph_keyword: false> to omit C<GRAPH> before
+named graph blocks.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<TriGSerializer>
+
+=over
+
+=item C<< serialize(Array quads) >>
+
+Returns pretty TriG for C<quads>.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Calls C<emit> with the serialized TriG text when there is output.
+Returns the serializer.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer/trig >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/serializer/turtle import TurtleSerializer;
+from rdf/term import RDFDefaultGraph, rdf_term_key;
+
+class TriGSerializer extends TurtleSerializer {
+	let Boolean wrap_default with get := false;
+	let Boolean graph_keyword with get := true;
+
+	method _named_graphs ( Array quads ) {
+		let seen := {};
+		let graphs := [];
+		for ( let quad in quads ) {
+			next if quad.get_graph() instanceof RDFDefaultGraph;
+			let key := rdf_term_key(quad.get_graph());
+			next if seen.exists(key);
+			seen.set( key, true );
+			graphs.push(quad.get_graph());
+		}
+		return graphs.sort( fn ( a, b ) -> rdf_term_key(a) cmp rdf_term_key(b) );
+	}
+
+	method _graph_label ( graph ) {
+		return self._term( graph, null, "subject", {} );
+	}
+
+	method serialize ( Array quads ) {
+		self._reset_state();
+		let body := "";
+		let default_body := self._serialize_graph_body(quads);
+		if ( default_body ne "" ) {
+			if ( wrap_default ) {
+				body _= "{\n" _
+					self._serialize_graph_body( quads, null, self.get_indent() ) _
+					"}\n\n";
+			}
+			else {
+				body _= default_body;
+			}
+		}
+		for ( let graph in self._named_graphs(quads) ) {
+			let graph_body := self._serialize_graph_body(
+				quads,
+				graph,
+				self.get_indent(),
+			);
+			next if graph_body eq "";
+			body _= "GRAPH " if graph_keyword;
+			body _= self._graph_label(graph) _ "\n{\n" _
+				graph_body _ "}\n\n";
+		}
+		return "" if body eq "";
+		return self._prefixes() _ body;
+	}
+
+}

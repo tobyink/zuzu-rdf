@@ -82,7 +82,10 @@ function _serializer_plan_bunch ( Dict map, subject ) {
 	return map.get(key);
 }
 
-function _serializer_plan_is_default_quad ( quad ) {
+function _serializer_plan_include_quad ( quad, Dict options ) {
+	if ( options.exists("graph_key") ) {
+		return rdf_term_key(quad.get_graph()) eq options.get("graph_key");
+	}
 	return quad.get_graph() instanceof RDFDefaultGraph;
 }
 
@@ -234,7 +237,7 @@ function rdf_serializer_plan ( Array quads, Dict options := {} ) {
 	let incoming := {};
 	let blank_subjects := {};
 	for ( let quad in quads ) {
-		next unless _serializer_plan_is_default_quad(quad);
+		next unless _serializer_plan_include_quad( quad, options );
 		let subject := quad.get_subject();
 		let bunch := _serializer_plan_bunch( bunch_map, subject );
 		bunch{triples}.push(quad);

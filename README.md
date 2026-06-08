@@ -5,8 +5,8 @@ RDF, Linked Data, and SPARQL tools for ZuzuScript.
 This trial distribution provides:
 
 - RDF term and quad value objects.
-- Parsers for N-Triples, N-Quads, Turtle, and RDF/XML.
-- Serializers for N-Triples, N-Quads, Turtle, RDF/XML, and SPARQL result
+- Parsers for N-Triples, N-Quads, Turtle, TriG, and RDF/XML.
+- Serializers for N-Triples, N-Quads, Turtle, TriG, RDF/XML, and SPARQL result
   sets.
 - A `std/db`-backed quad store for SQLite, MySQL, and PostgreSQL.
 - SPARQL 1.1 Query parsing and execution over stores.
@@ -32,7 +32,7 @@ Remote SPARQL Protocol endpoints can be queried with
 returned by local `sparql_query` and `sparql_update` calls.
 
 RDF syntax support includes author tests for the official W3C RDF 1.1
-RDF/XML, Turtle, N-Triples, and N-Quads manifests. RDF/XML covers typed
+RDF/XML, Turtle, TriG, N-Triples, and N-Quads manifests. RDF/XML covers typed
 node elements, `xml:base`, `xml:lang`, `rdf:ID`, `rdf:nodeID`, property
 attributes, `parseType` resource, collection, and XML literal forms, RDF
 lists, `rdf:li`, and RDF/XML reification.
@@ -48,7 +48,7 @@ project expressions, property paths, and subqueries, with exact
 ## Example
 
 ```zzs
-from rdf import RDFStore, TurtleParser, sparql_query;
+from rdf import RDFStore, TurtleParser, TriGSerializer, sparql_query;
 
 let store := RDFStore.temp();
 store.install_schema();
@@ -61,6 +61,8 @@ let result := sparql_query(store, """
 PREFIX ex: <http://example.com/>
 SELECT ?o WHERE { ex:s ex:p ?o . }
 """);
+
+let trig := ( new TriGSerializer() ).serialize(store.find());
 ```
 
 Use `sparql_parse` to parse Query or Update syntax without executing it:
@@ -70,6 +72,29 @@ let parsed := sparql_parse("""
 INSERT DATA { <http://example.com/s> <http://example.com/p> "value" . }
 """);
 ```
+
+The distribution includes two command-line helpers. `parse_rdf.zzs` reads RDF
+from one or more files, or from STDIN when no files are given, loads it into an
+RDF store, and can optionally dump the whole store:
+
+```sh
+zuzu scripts/parse_rdf.zzs --trig --sqlite data.sqlite data.trig
+zuzu scripts/parse_rdf.zzs --turtle --stdout data.ttl
+zuzu scripts/parse_rdf.zzs --turtle --base https://example.com/doc --stdout data.ttl
+zuzu scripts/parse_rdf.zzs --turtle --graph https://example.com/graph data.ttl
+zuzu scripts/parse_rdf.zzs --replace --sqlite data.sqlite data.ttl
+```
+
+`serialize_rdf.zzs` serializes an existing store and writes to STDOUT by
+default:
+
+```sh
+zuzu scripts/serialize_rdf.zzs --sqlite data.sqlite --trig-out
+zuzu scripts/serialize_rdf.zzs --sqlite data.sqlite --turtle-out --prefix ex=https://example.com/
+```
+
+Use `--parser=module.Class`, `--serializer=module.Class`, and
+`--store=module.Class` to load compatible third-party classes dynamically.
 
 Use `sparql_update` to execute Update operations transactionally:
 

@@ -10,10 +10,12 @@ normal and author-gated tests.
 | N-Triples parser | Implemented | Author-gated W3C RDF 1.1 N-Triples positive and negative syntax manifests plus strict local compliance tests for grammar edges, escapes, comments, invalid Turtle-only syntax, and serializer round trips. |
 | N-Quads parser | Implemented | Author-gated W3C RDF 1.1 N-Quads positive and negative syntax manifests plus strict local compliance tests for graph terms, default graph handling, invalid Turtle-only syntax, and round trips. |
 | Turtle parser | Implemented | Author-gated W3C RDF 1.1 Turtle eval, positive syntax, negative syntax, and negative eval manifests plus local tests for directives, base IRI resolution, prefixed-name escapes, collections, blank-node property lists, literals, numerics, and booleans. |
+| TriG parser | Implemented | Author-gated W3C RDF 1.1 TriG eval, positive syntax, negative syntax, and negative eval manifests plus local tests for default graphs, named graphs, blank graph labels, collections, and accepted graph-block variants. |
 | RDF/XML parser | Implemented | Author-gated W3C RDF 1.1 RDF/XML positive and negative syntax manifests plus focused local non-ASCII and feature tests. |
 | N-Triples serializer | Implemented | Local tests for escaped controls, escaped IRI characters, datatype IRIs, and invalid blank node labels. |
 | N-Quads serializer | Implemented | Local round-trip and graph serialization tests. |
 | Turtle serializer | Implemented | Local tests for prefix emission, MockTurtleSoup-style subject and predicate ordering, compact RDF lists, nested single-use blank nodes, and parser round trips. |
+| TriG serializer | Implemented | Local tests for example-3 style default output, `wrap_default`, `graph_keyword`, named graph blocks, and parser round trips. |
 | RDF/XML serializer | Implemented | Local tests for typed node elements, configured labelling predicates, nested single-use blank nodes, collection parseType output, and parser round trips. |
 
 ## SPARQL
@@ -42,7 +44,7 @@ normal and author-gated tests.
 
 ## Out Of Scope Here
 
-RDF-star, TriG, JSON-LD, federated SERVICE execution beyond direct HTTP
-SPARQL JSON requests, OWL RL, SHACL, store migrations, and full-text index
-hooks are intentionally out of scope for this distribution or deferred to
-future external distributions.
+RDF-star, JSON-LD, federated SERVICE execution beyond direct HTTP SPARQL
+JSON requests, OWL RL, SHACL, store migrations, and full-text index hooks
+are intentionally out of scope for this distribution or deferred to future
+external distributions.

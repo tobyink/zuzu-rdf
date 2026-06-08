@@ -368,6 +368,7 @@ class RDFReader {
 	let Dict prefixes with get := {};
 	let String base with get := "";
 	let Number blank_counter := 0;
+	let Boolean validate_decoded_iri := false;
 
 	method advance ( Number count ) {
 		pos += count;
@@ -376,6 +377,11 @@ class RDFReader {
 
 	method position () {
 		return pos;
+	}
+
+	method set_position ( Number value ) {
+		pos := value;
+		return self;
 	}
 
 	method fresh_blank () {
@@ -494,10 +500,16 @@ class RDFReader {
 				let esc := self._next();
 				if ( esc eq "u" ) {
 					let decoded := self._read_unicode_escape(4);
+					self._error("Invalid character in IRI")
+						if validate_decoded_iri and
+						decoded ~ /[\x00-\x20<>"{}|^`]/;
 					iri _= decoded;
 				}
 				else if ( esc eq "U" ) {
 					let decoded := self._read_unicode_escape(8);
+					self._error("Invalid character in IRI")
+						if validate_decoded_iri and
+						decoded ~ /[\x00-\x20<>"{}|^`]/;
 					iri _= decoded;
 				}
 				else {

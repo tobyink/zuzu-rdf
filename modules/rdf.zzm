@@ -55,9 +55,10 @@ datatype helpers, graph/dataset helpers, and vocabulary helpers.
 
 =head2 Parsers And Serializers
 
-Exports C<NTriplesParser>, C<NQuadsParser>, C<TurtleParser>,
-C<RdfXmlParser>, C<NTriplesSerializer>, C<NQuadsSerializer>,
-C<TurtleSerializer>, and C<RdfXmlSerializer>.
+Exports C<RdfParser>, C<NTriplesParser>, C<NQuadsParser>, C<TurtleParser>,
+C<RdfXmlParser>, C<RdfSerializer>, C<NTriplesSerializer>, C<NQuadsSerializer>,
+C<TurtleSerializer>, C<TriGParser>, C<TriGSerializer>, and
+C<RdfXmlSerializer>.
 
 =head2 SPARQL
 
@@ -126,14 +127,18 @@ from rdf/graph import
 	rdf_skolemize_blank_nodes,
 	rdf_stable_relabel_blank_nodes;
 from rdf/prefix import RDFPrefixRegistry;
+from rdf/parser import RdfParser;
 from rdf/parser/ntriples import NTriplesParser;
 from rdf/parser/nquads import NQuadsParser;
 from rdf/parser/turtle import TurtleParser;
+from rdf/parser/trig import TriGParser;
 from rdf/parser/rdfxml import RdfXmlParser;
 from rdf/resource import RDFResource;
+from rdf/serializer import RdfSerializer;
 from rdf/serializer/ntriples import NTriplesSerializer;
 from rdf/serializer/nquads import NQuadsSerializer;
 from rdf/serializer/turtle import TurtleSerializer;
+from rdf/serializer/trig import TriGSerializer;
 from rdf/serializer/rdfxml import RdfXmlSerializer;
 from rdf/vocab import
 	owl,

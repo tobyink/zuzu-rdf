@@ -156,6 +156,16 @@ Returns matching stored quads without entailment.
 
 Returns matching quads. Subclasses may add inferred quads.
 
+=item C<< serialize(serializer := null) >>
+
+Serializes all quads in the store. Defaults to C<NQuadsSerializer> when
+no serializer object is supplied.
+
+=item C<< serialize_to(Path path, serializer := null) >>
+
+Serializes all quads in the store to C<path>. Defaults to
+C<NQuadsSerializer> when no serializer object is supplied.
+
 =back
 
 =back
@@ -184,7 +194,9 @@ from rdf/term import
 	rdf_term_hash,
 	rdf_term_kind;
 from rdf/graph import rdf_quad_key;
+from rdf/serializer/nquads import NQuadsSerializer;
 from std/db import DB;
+from std/io import Path;
 from std/string import join;
 
 function _ident ( String raw ) {
@@ -642,5 +654,17 @@ class RDFStore {
 	method find ( subject := null, predicate := null, object := null,
 	graph := null ) {
 		return self.explicit_find( subject, predicate, object, graph );
+	}
+
+	method serialize ( serializer := null ) {
+		let actual_serializer := serializer == null
+			? new NQuadsSerializer()
+			: serializer;
+		return actual_serializer.serialize(self.find());
+	}
+
+	method serialize_to ( Path path, serializer := null ) {
+		path.spew_utf8(self.serialize(serializer));
+		return self;
 	}
 }

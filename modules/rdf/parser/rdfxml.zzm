@@ -57,6 +57,14 @@ RDF/XML.
 
 Reads UTF-8 from C<path> and parses it.
 
+=item C<< parse_lines(Array lines, ... options) >>
+
+Parses concatenated line chunks.
+
+=item C<< parse_chunks(Array chunks, ... options) >>
+
+Parses concatenated string or nested-array chunks.
+
 =back
 
 =back
@@ -71,6 +79,7 @@ License version 2.
 
 =cut
 
+from rdf/parser import RdfParser;
 from rdf/parser/common import _parser_options, _parser_result;
 from rdf/term import
 	RDF_NS,
@@ -628,7 +637,7 @@ function _rdfxml_parse_node_element ( parser, node, Dict parent_ctx,
 	return subject;
 }
 
-class RdfXmlParser {
+class RdfXmlParser with RdfParser {
 	let ids with get := {};
 	let Number blank_counter := 0;
 	let Number li_counter with get, set := 0;
@@ -663,9 +672,5 @@ class RdfXmlParser {
 			_rdfxml_parse_node_element( self, subj_node, ctx, out );
 		}
 		return _parser_result( out, options );
-	}
-
-	method parse_file ( path, ... PairList options ) {
-		return self.parse_string(path.slurp_utf8(), ...options);
 	}
 }

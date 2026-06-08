@@ -1,0 +1,61 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/serializer - shared RDF serializer trait.
+
+=head1 SYNOPSIS
+
+  from rdf/serializer import RdfSerializer;
+
+=head1 DESCRIPTION
+
+C<RdfSerializer> provides the common serializer entry points used by the
+RDF serializer classes. Classes compose the trait and implement
+C<serialize>.
+
+=head1 EXPORTS
+
+=head2 Traits
+
+=over
+
+=item C<RdfSerializer>
+
+=over
+
+=item C<< serialize(Array quads) >>
+
+Placeholder serializer method. Classes using this trait should override
+it.
+
+=item C<< serialize_each(Array quads, Function emit) >>
+
+Serializes C<quads> and calls C<emit> with the result when it is not
+empty. Returns the serializer.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/serializer >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+trait RdfSerializer {
+	method serialize ( Array quads ) {
+		die "Unimplemented";
+	}
+
+	method serialize_each ( Array quads, Function emit ) {
+		let text := self.serialize(quads);
+		emit(text) if text ne "";
+		return self;
+	}
+}

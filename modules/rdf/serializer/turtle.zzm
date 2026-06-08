@@ -60,6 +60,7 @@ License version 2.
 
 from rdf/ns import RDF_NS, RDFS_NS, XSD_NS;
 from rdf/prefix import RDFPrefixRegistry;
+from rdf/serializer import RdfSerializer;
 from rdf/serializer/ntriples import _nt_escape, _nt_escape_iri;
 from rdf/serializer/plan import rdf_serializer_plan;
 from rdf/term import
@@ -89,7 +90,7 @@ function _turtle_matches_abbreviation ( String iri, Array abbreviate ) {
 	return false;
 }
 
-class TurtleSerializer {
+class TurtleSerializer with RdfSerializer {
 	let Dict namespaces with get := {};
 	let Array abbreviate with get := [];
 	let String indent with get := "\t";
@@ -302,7 +303,8 @@ class TurtleSerializer {
 			active_indent _= indent;
 		}
 		else {
-			out _= self._term( bunch{subject}, null, "subject", plan ) _ "\n";
+			out _= current_indent _
+				self._term( bunch{subject}, null, "subject", plan ) _ "\n";
 		}
 		let triples := bunch{triples};
 		let i := 0;
@@ -332,26 +334,47 @@ class TurtleSerializer {
 		return lines.length() == 0 ? "" : join( "\n", lines ) _ "\n\n";
 	}
 
-	method serialize ( Array quads ) {
+	method _reset_state () {
 		used_prefixes := {};
 		bnode_labels := {};
 		bnode_count := 0;
-		let plan := rdf_serializer_plan( quads, {
+	}
+
+	method _plan_options ( graph := null ) {
+		let opts := {
 			labelling: labelling,
-		});
+		};
+		if ( graph != null ) {
+			opts.set( "graph_key", rdf_term_key(graph) );
+		}
+		return opts;
+	}
+
+	method _serialize_graph_body (
+		Array quads,
+		graph := null,
+		String current_indent := ""
+	) {
+		let plan := rdf_serializer_plan( quads, self._plan_options(graph) );
 		let body := "";
 		for ( let bunch in plan{bunches} ) {
 			next if bunch{done};
 			next unless bunch{triples}.length() > 0;
-			body _= self._serialize_bunch( bunch, plan, "", false ) _ "\n";
+			body _= self._serialize_bunch(
+				bunch,
+				plan,
+				current_indent,
+				false,
+			) _ "\n";
 		}
+		return body;
+	}
+
+	method serialize ( Array quads ) {
+		self._reset_state();
+		let body := self._serialize_graph_body(quads);
 		return "" if body eq "";
 		return self._prefixes() _ body;
 	}
 
-	method serialize_each ( Array quads, Function emit ) {
-		let text := self.serialize(quads);
-		emit(text) if text ne "";
-		return self;
-	}
 }

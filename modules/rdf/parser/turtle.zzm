@@ -67,6 +67,7 @@ License version 2.
 
 =cut
 
+from rdf/parser import RdfParser;
 from rdf/parser/common import RDFReader, _parser_options, _parser_result;
 from rdf/term import RDF_NS, RDFIRI, rdf_iri, rdf_quad;
 from std/string import ends_with, substr;
@@ -75,19 +76,6 @@ function _turtle_blank_node;
 function _turtle_collection;
 function _turtle_object;
 function _turtle_predicate_object_list;
-
-function _rdf_concat_chunks ( Array chunks ) {
-	let text := "";
-	for ( let chunk in chunks ) {
-		if ( chunk instanceof Array ) {
-			text _= _rdf_concat_chunks(chunk);
-		}
-		else {
-			text _= chunk;
-		}
-	}
-	return text;
-}
 
 function _turtle_directive ( RDFReader reader ) {
 	reader._skip_ws();
@@ -141,22 +129,22 @@ function _turtle_predicate ( RDFReader reader ) {
 	return predicate;
 }
 
-function _turtle_object ( RDFReader reader, Array out ) {
+function _turtle_object ( RDFReader reader, Array out, graph := null ) {
 	reader._skip_ws();
 	if ( reader._peek() eq "[" ) {
-		return _turtle_blank_node(reader, out);
+		return _turtle_blank_node(reader, out, graph);
 	}
 	if ( reader._peek() eq "(" ) {
-		return _turtle_collection(reader, out);
+		return _turtle_collection(reader, out, graph);
 	}
 	return reader.read_object();
 }
 
 function _turtle_object_list ( RDFReader reader, subject, predicate,
-	Array out ) {
+	Array out, graph := null ) {
 	while ( true ) {
-		let object := _turtle_object( reader, out );
-		out.push(rdf_quad( subject, predicate, object ));
+		let object := _turtle_object( reader, out, graph );
+		out.push(rdf_quad( subject, predicate, object, graph ));
 		reader._skip_ws();
 		last unless reader._peek() eq ",";
 		reader.advance(1);
@@ -164,10 +152,10 @@ function _turtle_object_list ( RDFReader reader, subject, predicate,
 }
 
 function _turtle_predicate_object_list ( RDFReader reader, subject,
-	Array out ) {
+	Array out, graph := null ) {
 	while ( true ) {
 		let predicate := _turtle_predicate(reader);
-		_turtle_object_list( reader, subject, predicate, out );
+		_turtle_object_list( reader, subject, predicate, out, graph );
 		reader._skip_ws();
 		last unless reader._peek() eq ";";
 		reader.advance(1);
@@ -176,22 +164,23 @@ function _turtle_predicate_object_list ( RDFReader reader, subject,
 			reader.advance(1);
 			reader._skip_ws();
 		}
-		last if reader._peek() eq "." or reader._peek() eq "]";
+		last if reader._peek() eq "." or reader._peek() eq "]" or
+			reader._peek() eq "}";
 	}
 }
 
-function _turtle_blank_node ( RDFReader reader, Array out ) {
+function _turtle_blank_node ( RDFReader reader, Array out, graph := null ) {
 	reader._expect("[");
 	let blank := reader.fresh_blank();
 	reader._skip_ws();
 	if ( reader._peek() ne "]" ) {
-		_turtle_predicate_object_list( reader, blank, out );
+		_turtle_predicate_object_list( reader, blank, out, graph );
 	}
 	reader._expect("]");
 	return blank;
 }
 
-function _turtle_collection ( RDFReader reader, Array out ) {
+function _turtle_collection ( RDFReader reader, Array out, graph := null ) {
 	reader._expect("(");
 	reader._skip_ws();
 	if ( reader._peek() eq ")" ) {
@@ -201,11 +190,12 @@ function _turtle_collection ( RDFReader reader, Array out ) {
 	let head := reader.fresh_blank();
 	let current := head;
 	while ( true ) {
-		let item := _turtle_object( reader, out );
+		let item := _turtle_object( reader, out, graph );
 		out.push(rdf_quad(
 			current,
 			rdf_iri(RDF_NS _ "first"),
 			item,
+			graph,
 		));
 		reader._skip_ws();
 		if ( reader._peek() eq ")" ) {
@@ -213,6 +203,7 @@ function _turtle_collection ( RDFReader reader, Array out ) {
 				current,
 				rdf_iri(RDF_NS _ "rest"),
 				rdf_iri(RDF_NS _ "nil"),
+				graph,
 			));
 			reader.advance(1);
 			return head;
@@ -222,26 +213,31 @@ function _turtle_collection ( RDFReader reader, Array out ) {
 			current,
 			rdf_iri(RDF_NS _ "rest"),
 			next_node,
+			graph,
 		));
 		current := next_node;
 	}
 }
 
-function _turtle_subject ( RDFReader reader, Array out ) {
+function _turtle_subject ( RDFReader reader, Array out, graph := null ) {
 	reader._skip_ws();
 	if ( reader._peek() eq "[" ) {
-		return { term: _turtle_blank_node( reader, out ), complete: true };
+		return { term: _turtle_blank_node( reader, out, graph ), complete: true };
 	}
 	if ( reader._peek() eq "(" ) {
-		return { term: _turtle_collection( reader, out ), complete: false };
+		return { term: _turtle_collection( reader, out, graph ), complete: false };
 	}
 	return { term: reader.read_subject(), complete: false };
 }
 
-class TurtleParser {
+class TurtleParser with RdfParser {
 	method parse_string ( String text, ... PairList options ) {
 		let opts := _parser_options(options);
-		let reader := new RDFReader(source: text, base: opts{base});
+		let reader := new RDFReader(
+			source: text,
+			base: opts{base},
+			validate_decoded_iri: true,
+		);
 		let out := [];
 		while ( true ) {
 			reader._skip_ws();
@@ -257,17 +253,5 @@ class TurtleParser {
 			reader._expect(".");
 		}
 		return _parser_result( out, options );
-	}
-
-	method parse_file ( path, ... PairList options ) {
-		return self.parse_string(path.slurp_utf8(), ...options);
-	}
-
-	method parse_lines ( Array lines, ... PairList options ) {
-		return self.parse_string(_rdf_concat_chunks(lines), ...options);
-	}
-
-	method parse_chunks ( Array chunks, ... PairList options ) {
-		return self.parse_string(_rdf_concat_chunks(chunks), ...options);
 	}
 }

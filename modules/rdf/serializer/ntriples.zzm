@@ -57,6 +57,7 @@ License version 2.
 
 =cut
 
+from rdf/serializer import RdfSerializer;
 from rdf/term import RDFBlank, RDFIRI, RDFLiteral, XSD_NS, rdf_iri, rdf_term_key;
 from std/string import contains, join, ord, substr;
 
@@ -166,7 +167,7 @@ function _nt_term ( term ) {
 	die "rdf: cannot serialize graph term as object";
 }
 
-class NTriplesSerializer {
+class NTriplesSerializer with RdfSerializer {
 	method line ( quad ) {
 		return
 			_nt_term(quad.get_subject()) _ " " _

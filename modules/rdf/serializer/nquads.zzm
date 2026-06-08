@@ -56,11 +56,12 @@ License version 2.
 
 =cut
 
+from rdf/serializer import RdfSerializer;
 from rdf/serializer/ntriples import _nt_term;
 from rdf/term import RDFDefaultGraph;
 from std/string import join;
 
-class NQuadsSerializer {
+class NQuadsSerializer with RdfSerializer {
 	method line ( quad ) {
 		let line := _nt_term(quad.get_subject()) _ " " _
 			_nt_term(quad.get_predicate()) _ " " _

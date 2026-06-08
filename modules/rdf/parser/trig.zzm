@@ -1,0 +1,214 @@
+=encoding utf8
+
+=head1 NAME
+
+rdf/parser/trig - TriG parser.
+
+=head1 SYNOPSIS
+
+  from rdf/parser/trig import TriGParser;
+  
+  let quads := (new TriGParser()).parse_string("""
+  @prefix ex: <http://example.com/> .
+  ex:s ex:p "default graph" .
+  GRAPH ex:g { ex:s ex:p "named graph" . }
+  """);
+
+=head1 DESCRIPTION
+
+C<TriGParser> parses RDF 1.1 TriG into RDF quads. It accepts default
+graph triples outside braces, wrapped default graph blocks, named graph
+blocks with or without the C<GRAPH> keyword, and graph labels written as
+IRIs, prefixed names, or blank node labels.
+
+Parser options are C<base>, used to resolve relative IRIs, and C<into>,
+used to load parsed quads directly into a store.
+
+=head1 EXPORTS
+
+=head2 Classes
+
+=over
+
+=item C<TriGParser>
+
+=over
+
+=item C<< parse_string(String text, ... options) >>
+
+Parses C<text>. Returns an array of quads, or the supplied C<into> store
+after adding the quads. Throws C<RDFSyntaxError> on invalid input.
+
+=item C<< parse_file(path, ... options) >>
+
+Reads UTF-8 from C<path> and parses it.
+
+=item C<< parse_lines(Array lines, ... options) >>
+
+Parses concatenated line chunks.
+
+=item C<< parse_chunks(Array chunks, ... options) >>
+
+Parses concatenated string or nested-array chunks.
+
+=back
+
+=back
+
+=head1 COPYRIGHT AND LICENCE
+
+B<< rdf/parser/trig >> is copyright Toby Inkster.
+
+It is free software; you may redistribute it and/or modify it under
+the terms of either the Artistic License 1.0 or the GNU General Public
+License version 2.
+
+=cut
+
+from rdf/parser import RdfParser;
+from rdf/parser/common import RDFReader, _parser_options, _parser_result;
+from rdf/parser/turtle import
+	_turtle_directive,
+	_turtle_predicate_object_list,
+	_turtle_subject;
+from rdf/term import RDFBlank, RDFIRI, rdf_default_graph;
+
+function _trig_starts_graph_keyword ( RDFReader reader ) {
+	return reader._starts_ci("GRAPH ") or
+		reader._starts_ci("GRAPH\t") or
+		reader._starts_ci("GRAPH\n") or
+		reader._starts_ci("GRAPH\r");
+}
+
+function _trig_anon_label ( RDFReader reader ) {
+	reader._expect("[");
+	reader._skip_ws();
+	reader._expect("]");
+	return reader.fresh_blank();
+}
+
+function _trig_label ( RDFReader reader ) {
+	reader._skip_ws();
+	return _trig_anon_label(reader) if reader._peek() eq "[";
+	let label := reader.read_subject();
+	reader._error("TriG graph label must be an IRI or blank node")
+		unless label instanceof RDFIRI or label instanceof RDFBlank;
+	return label;
+}
+
+function _trig_wrapped_graph ( RDFReader reader, Array out, graph ) {
+	reader._expect("{");
+	while ( true ) {
+		reader._skip_ws();
+		if ( reader._peek() eq "}" ) {
+			reader.advance(1);
+			return null;
+		}
+		reader._error("Unterminated graph block") if reader._peek() == null;
+		let subject := _turtle_subject( reader, out, graph );
+		reader._skip_ws();
+		if ( not subject{complete} or
+			( reader._peek() ne "." and reader._peek() ne "}" ) ) {
+			_turtle_predicate_object_list(
+				reader,
+				subject{term},
+				out,
+				graph,
+			);
+		}
+		reader._skip_ws();
+		if ( reader._peek() eq "." ) {
+			reader.advance(1);
+		}
+		else if ( reader._peek() ne "}" ) {
+			reader._error("Expected . or }");
+		}
+	}
+}
+
+function _trig_default_triples_block ( RDFReader reader, Array out ) {
+	let subject := _turtle_subject( reader, out );
+	reader._skip_ws();
+	if ( not subject{complete} or reader._peek() ne "." ) {
+		_turtle_predicate_object_list( reader, subject{term}, out );
+	}
+	reader._expect(".");
+}
+
+function _trig_block ( RDFReader reader, Array out ) {
+	reader._skip_ws();
+	if ( _turtle_directive(reader) ) {
+		return null;
+	}
+	if ( _trig_starts_graph_keyword(reader) ) {
+		reader.advance(5);
+		let graph := _trig_label(reader);
+		_trig_wrapped_graph( reader, out, graph );
+		return null;
+	}
+	if ( reader._peek() eq "{" ) {
+		_trig_wrapped_graph( reader, out, rdf_default_graph() );
+		return null;
+	}
+	if ( reader._peek() eq "[" ) {
+		let mark := reader.position();
+		let subject := null;
+		let is_anon := true;
+		try {
+			subject := _trig_anon_label(reader);
+		}
+		catch ( RDFError e ) {
+			reader.set_position(mark);
+			is_anon := false;
+		}
+		if ( is_anon ) {
+			reader._skip_ws();
+			if ( reader._peek() eq "{" ) {
+				_trig_wrapped_graph( reader, out, subject );
+				return null;
+			}
+			if ( reader._peek() ne "." ) {
+				_turtle_predicate_object_list( reader, subject, out );
+			}
+			reader._expect(".");
+			return null;
+		}
+		let turtle_subject := _turtle_subject( reader, out );
+		reader._skip_ws();
+		if ( not turtle_subject{complete} or reader._peek() ne "." ) {
+			_turtle_predicate_object_list( reader, turtle_subject{term}, out );
+		}
+		reader._expect(".");
+		return null;
+	}
+	if ( reader._peek() eq "(" ) {
+		_trig_default_triples_block( reader, out );
+		return null;
+	}
+	let label_or_subject := _trig_label(reader);
+	reader._skip_ws();
+	if ( reader._peek() eq "{" ) {
+		_trig_wrapped_graph( reader, out, label_or_subject );
+		return null;
+	}
+	_turtle_predicate_object_list( reader, label_or_subject, out );
+	reader._expect(".");
+}
+
+class TriGParser with RdfParser {
+	method parse_string ( String text, ... PairList options ) {
+		let opts := _parser_options(options);
+		let reader := new RDFReader(
+			source: text,
+			base: opts{base},
+			validate_decoded_iri: true,
+		);
+		let out := [];
+		while ( true ) {
+			reader._skip_ws();
+			last if reader._peek() == null;
+			_trig_block( reader, out );
+		}
+		return _parser_result( out, options );
+	}
+}

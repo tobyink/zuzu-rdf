@@ -60,38 +60,14 @@ License version 2.
 
 =cut
 
+from rdf/parser import RdfParser;
 from rdf/parser/common import RDFReader, _parser_result;
 
-function _rdf_concat_chunks ( Array chunks ) {
-	let text := "";
-	for ( let chunk in chunks ) {
-		if ( chunk instanceof Array ) {
-			text _= _rdf_concat_chunks(chunk);
-		}
-		else {
-			text _= chunk;
-		}
-	}
-	return text;
-}
-
-class NQuadsParser {
+class NQuadsParser with RdfParser {
 	method parse_string ( String text, ... PairList options ) {
 		return _parser_result(
 			( new RDFReader(source: text) ).read_nt_all(true),
 			options,
 		);
-	}
-
-	method parse_file ( path, ... PairList options ) {
-		return self.parse_string(path.slurp_utf8(), ...options);
-	}
-
-	method parse_lines ( Array lines, ... PairList options ) {
-		return self.parse_string(_rdf_concat_chunks(lines), ...options);
-	}
-
-	method parse_chunks ( Array chunks, ... PairList options ) {
-		return self.parse_string(_rdf_concat_chunks(chunks), ...options);
 	}
 }

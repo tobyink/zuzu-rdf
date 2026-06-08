@@ -1,0 +1,465 @@
+from test/more import *;
+
+requires_capability( "db" );
+requires_capability( "fs" );
+requires_capability( "proc" );
+
+from std/io import Path;
+from std/proc import Env, Proc;
+from std/string import contains;
+
+let temp := Path.tempdir();
+let turtle_file := temp.child("sample.ttl");
+let rdfxml_file := temp.child("sample.rdf");
+let trig_file := temp.child("sample.trig");
+let out_file := temp.child("out.nt");
+let query_out_file := temp.child("query.json");
+let db_file := temp.child("store.sqlite");
+let query_file := temp.child("query.rq");
+let replace_db_file := temp.child("replace.sqlite");
+let no_schema_db_file := temp.child("no-schema.sqlite");
+let existing_schema_db_file := temp.child("existing-schema.sqlite");
+
+turtle_file.spew_utf8("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "turtle" .
+""");
+
+rdfxml_file.spew_utf8("""<?xml version="1.0"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:ex="http://example.com/">
+  <rdf:Description rdf:about="http://example.com/s">
+    <ex:p>xml</ex:p>
+  </rdf:Description>
+</rdf:RDF>
+""");
+
+trig_file.spew_utf8("""
+@prefix ex: <http://example.com/> .
+ex:s ex:p "default" .
+GRAPH ex:g { ex:s ex:p "named" . }
+""");
+
+query_file.spew_utf8("""
+PREFIX ex: <http://example.com/>
+SELECT ?o WHERE { ex:s ex:p ?o . }
+""");
+
+let env := {
+	PATH: Env.get( "PATH", "" ),
+	ZUZULIB: "modules",
+};
+let configured_zuzu := Env.get( "ZUZU", "" );
+env.set( "ZUZU", configured_zuzu ) if configured_zuzu ne "";
+
+function _run_rdf_script ( Array args, stdin := null ) {
+	let opts := {
+		capture_stdout: true,
+		capture_stderr: true,
+		env: env,
+	};
+	opts.set( "stdin", stdin ) if stdin != null;
+	return Proc.run( "zuzu", args, opts );
+}
+
+let turtle_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--stdout",
+	turtle_file.to_String(),
+]);
+is( turtle_run{exit_code}, 0, "parse_rdf --turtle exits successfully" );
+like(
+	turtle_run{stdout},
+	/"turtle"/,
+	"parse_rdf --stdout serializes the loaded store",
+);
+ok(
+	contains( turtle_run{stderr}, "\x1B[36m" ),
+	"parse_rdf prints counts in cyan",
+);
+like(
+	turtle_run{stderr},
+	/1 statements read/,
+	"parse_rdf reports the parsed statement count",
+);
+
+let stdin_sniff := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--stdout",
+], turtle_file.slurp_utf8());
+is(
+	stdin_sniff{exit_code},
+	0,
+	"parse_rdf reads STDIN and sniffs Turtle by default",
+);
+like( stdin_sniff{stdout}, /"turtle"/, "STDIN Turtle input is loaded" );
+like( stdin_sniff{stderr}, /<stdin>/, "STDIN counts are labelled" );
+
+let sniff_xml := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--stdout",
+	rdfxml_file.to_String(),
+]);
+is( sniff_xml{exit_code}, 0, "parse_rdf sniffs RDF/XML successfully" );
+like( sniff_xml{stdout}, /"xml"/, "RDF/XML sniffing loads XML input" );
+
+let dynamic_parser := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--parser=rdf/parser/turtle.TurtleParser",
+	"--serializer=rdf/serializer/nquads.NQuadsSerializer",
+	"--stdout",
+	turtle_file.to_String(),
+]);
+is( dynamic_parser{exit_code}, 0, "dynamic parser and serializer load" );
+like(
+	dynamic_parser{stdout},
+	/<http:\/\/example\.com\/s> <http:\/\/example\.com\/p> "turtle" \./,
+	"dynamic serializer emits N-Quads-compatible output",
+);
+
+let base_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--base",
+	"http://example.com/base/",
+	"--stdout",
+], "<s> <p> \"base\" .\n");
+is( base_run{exit_code}, 0, "parse_rdf --base exits successfully" );
+like(
+	base_run{stdout},
+	/<http:\/\/example\.com\/base\/s> <http:\/\/example\.com\/base\/p> "base" \./,
+	"parse_rdf --base resolves relative IRIs",
+);
+
+let graph_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--graph",
+	"http://example.com/graph",
+	"--nquads-out",
+	"--stdout",
+], turtle_file.slurp_utf8());
+is( graph_run{exit_code}, 0, "parse_rdf --graph exits successfully" );
+like(
+	graph_run{stdout},
+	/<http:\/\/example\.com\/graph> \./,
+	"parse_rdf --graph loads default triples into the requested graph",
+);
+
+let prefix_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--turtle-out",
+	"--prefix",
+	"ex=http://example.com/",
+	"--stdout",
+], turtle_file.slurp_utf8());
+is( prefix_run{exit_code}, 0, "parse_rdf --prefix exits successfully" );
+like( prefix_run{stdout}, /ex:p\s+"turtle"/, "serializer prefixes are applied" );
+
+let quiet_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--quiet",
+	"--stdout",
+], turtle_file.slurp_utf8());
+is( quiet_run{exit_code}, 0, "parse_rdf --quiet exits successfully" );
+is( quiet_run{stderr}, "", "parse_rdf --quiet suppresses count output" );
+
+let trig_run := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--trig",
+	"--trig-out",
+	"--stdout",
+	trig_file.to_String(),
+]);
+is( trig_run{exit_code}, 0, "parse_rdf --trig exits successfully" );
+like( trig_run{stdout}, /GRAPH /, "TriG output uses named graph syntax" );
+like(
+	trig_run{stderr},
+	/2 statements read/,
+	"parse_rdf counts default and named graph statements",
+);
+
+let file_out := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--output",
+	out_file.to_String(),
+	turtle_file.to_String(),
+]);
+is( file_out{exit_code}, 0, "parse_rdf --output exits successfully" );
+like( out_file.slurp_utf8(), /"turtle"/, "parse_rdf writes output files" );
+
+let load_sqlite := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--sqlite",
+	db_file.to_String(),
+	turtle_file.to_String(),
+]);
+is( load_sqlite{exit_code}, 0, "parse_rdf loads a SQLite store" );
+
+let serialize_sqlite := _run_rdf_script([
+	"scripts/serialize_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--nquads-out",
+]);
+is( serialize_sqlite{exit_code}, 0, "serialize_rdf dumps a SQLite store" );
+like(
+	serialize_sqlite{stdout},
+	/"turtle"/,
+	"serialize_rdf writes to STDOUT by default",
+);
+
+let query_temp := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--turtle",
+	"--query",
+	"PREFIX ex: <http://example.com/> SELECT ?o WHERE { ex:s ex:p ?o . }",
+	turtle_file.to_String(),
+]);
+is( query_temp{exit_code}, 0, "query_rdf loads RDF files into a temp store" );
+like( query_temp{stdout}, /"value":"turtle"/, "query_rdf defaults SELECT output to JSON" );
+like( query_temp{stderr}, /1 statements read/, "query_rdf reports parsed RDF input counts" );
+
+let query_existing := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--query-file",
+	query_file.to_String(),
+]);
+is( query_existing{exit_code}, 0, "query_rdf queries an existing SQLite store" );
+like( query_existing{stdout}, /"value":"turtle"/, "query_rdf reads query text from a file" );
+is( query_existing{stderr}, "", "query_rdf does not print counts for existing stores" );
+
+let query_stdin := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--turtle",
+	"--query",
+	"PREFIX ex: <http://example.com/> ASK { ex:s ex:p \"turtle\" . }",
+	"-",
+], turtle_file.slurp_utf8());
+is( query_stdin{exit_code}, 0, "query_rdf accepts explicit RDF STDIN input" );
+like( query_stdin{stdout}, /"boolean":true/, "query_rdf serializes ASK results as JSON" );
+like( query_stdin{stderr}, /<stdin>/, "query_rdf labels explicit STDIN counts" );
+
+let query_csv := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--csv-results",
+	"--query-file",
+	query_file.to_String(),
+]);
+is( query_csv{exit_code}, 0, "query_rdf accepts result format shortcuts" );
+is( query_csv{stdout}, "o\nturtle\n", "query_rdf serializes SELECT results as CSV" );
+
+let query_file_out := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--output",
+	query_out_file.to_String(),
+	"--query-file",
+	query_file.to_String(),
+]);
+is( query_file_out{exit_code}, 0, "query_rdf writes query output files" );
+is( query_file_out{stdout}, "", "query_rdf --output suppresses STDOUT" );
+like( query_out_file.slurp_utf8(), /"value":"turtle"/, "query_rdf writes JSON query output" );
+
+let query_construct := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--query",
+	"CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }",
+]);
+is( query_construct{exit_code}, 0, "query_rdf runs graph queries" );
+like(
+	query_construct{stdout},
+	/<http:\/\/example\.com\/s> <http:\/\/example\.com\/p> "turtle" \./,
+	"query_rdf defaults graph results to N-Quads",
+);
+
+let query_construct_turtle := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--turtle-out",
+	"--prefix",
+	"ex=http://example.com/",
+	"--query",
+	"CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }",
+]);
+is( query_construct_turtle{exit_code}, 0, "query_rdf accepts graph serializers" );
+like( query_construct_turtle{stdout}, /ex:p\s+"turtle"/, "query_rdf applies graph serializer prefixes" );
+
+let first_replace := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--sqlite",
+	replace_db_file.to_String(),
+], """
+@prefix ex: <http://example.com/> .
+ex:s ex:p "first" .
+""");
+is( first_replace{exit_code}, 0, "parse_rdf initial replace fixture loads" );
+
+let second_replace := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--replace",
+	"--sqlite",
+	replace_db_file.to_String(),
+], """
+@prefix ex: <http://example.com/> .
+ex:s ex:p "second" .
+""");
+is( second_replace{exit_code}, 0, "parse_rdf --replace reloads store" );
+let replaced_store := _run_rdf_script([
+	"scripts/serialize_rdf.zzs",
+	"--sqlite",
+	replace_db_file.to_String(),
+]);
+like( replaced_store{stdout}, /"second"/, "--replace keeps new data" );
+unlike( replaced_store{stdout}, /"first"/, "--replace removes previous data" );
+
+let no_schema := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--no-install-schema",
+	"--sqlite",
+	no_schema_db_file.to_String(),
+], turtle_file.slurp_utf8());
+ok( no_schema{exit_code} != 0, "--no-install-schema rejects missing schema" );
+like(
+	no_schema{stderr},
+	/schema is not installed|unsupported or missing RDF store schema/,
+	"--no-install-schema reports schema failure",
+);
+
+let existing_schema := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--sqlite",
+	existing_schema_db_file.to_String(),
+], turtle_file.slurp_utf8());
+is( existing_schema{exit_code}, 0, "schema fixture initializes" );
+let no_install_existing := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--no-install-schema",
+	"--sqlite",
+	existing_schema_db_file.to_String(),
+], """
+@prefix ex: <http://example.com/> .
+ex:s2 ex:p "extra" .
+""");
+is(
+	no_install_existing{exit_code},
+	0,
+	"--no-install-schema loads into an existing schema",
+);
+
+let conflict := _run_rdf_script([
+	"scripts/parse_rdf.zzs",
+	"--turtle",
+	"--trig",
+	turtle_file.to_String(),
+]);
+ok( conflict{exit_code} != 0, "parse_rdf rejects parser conflicts" );
+like( conflict{stderr}, /choose only one parser/, "parser conflict is reported" );
+
+let serialize_parser_option := _run_rdf_script([
+	"scripts/serialize_rdf.zzs",
+	"--turtle",
+]);
+ok(
+	serialize_parser_option{exit_code} != 0,
+	"serialize_rdf rejects parser options",
+);
+like(
+	serialize_parser_option{stderr},
+	/parser options are not accepted/,
+	"serialize_rdf parser-option error is reported",
+);
+
+let query_missing := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	turtle_file.to_String(),
+]);
+ok( query_missing{exit_code} != 0, "query_rdf rejects missing query text" );
+like( query_missing{stderr}, /--query or --query-file is required/, "missing query error is reported" );
+
+let query_both_sources := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--query",
+	"ASK {}",
+	"--query-file",
+	query_file.to_String(),
+	turtle_file.to_String(),
+]);
+ok( query_both_sources{exit_code} != 0, "query_rdf rejects multiple query sources" );
+like( query_both_sources{stderr}, /choose only one query source/, "query source conflict is reported" );
+
+let query_no_store := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--query",
+	"ASK {}",
+]);
+ok( query_no_store{exit_code} != 0, "query_rdf rejects missing store and RDF inputs" );
+like( query_no_store{stderr}, /needs RDF inputs or --dsn\/--sqlite/, "missing store error is reported" );
+
+let query_parser_conflict := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--query",
+	"ASK {}",
+	"--turtle",
+	"--trig",
+	turtle_file.to_String(),
+]);
+ok( query_parser_conflict{exit_code} != 0, "query_rdf rejects parser conflicts" );
+like( query_parser_conflict{stderr}, /choose only one parser/, "query parser conflict is reported" );
+
+let query_select_graph_output := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--turtle-out",
+	"--query-file",
+	query_file.to_String(),
+]);
+ok(
+	query_select_graph_output{exit_code} != 0,
+	"query_rdf rejects graph serializers for SELECT",
+);
+like(
+	query_select_graph_output{stderr},
+	/graph serializer options are not accepted/,
+	"SELECT graph serializer error is reported",
+);
+
+let query_construct_results_output := _run_rdf_script([
+	"scripts/query_rdf.zzs",
+	"--sqlite",
+	db_file.to_String(),
+	"--csv-results",
+	"--query",
+	"CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }",
+]);
+ok(
+	query_construct_results_output{exit_code} != 0,
+	"query_rdf rejects result-set serializers for graph queries",
+);
+like(
+	query_construct_results_output{stderr},
+	/result-set options are not accepted/,
+	"graph result-set serializer error is reported",
+);
+
+done_testing();
