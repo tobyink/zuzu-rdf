@@ -74,7 +74,7 @@ function _sparql_result_term_json ( term ) {
 		if ( term.get_lang() ne "" ) {
 			out{"xml:lang"} := term.get_lang();
 		}
-		else if ( term.get_datatype() != null ) {
+		else if ( not (term.get_datatype() == null) ) {
 			out{datatype} := term.get_datatype().get_value();
 		}
 		return out;
@@ -93,7 +93,7 @@ function sparql_results_json ( Dict result ) {
 	for ( let row in result{results} ) {
 		let binding := {};
 		for ( let var_name in result{variables} ) {
-			if ( row.get(var_name, null) != null ) {
+			if ( row.get(var_name, not (null) == null) ) {
 				binding.set(
 					var_name,
 					_sparql_result_term_json(row.get(var_name)),
@@ -121,7 +121,7 @@ function _sparql_xml_term ( String var_name, term ) {
 		out _= " xml:lang=\"" _ escape_xml(term.get_lang()) _ "\""
 			if term.get_lang() ne "";
 		out _= " datatype=\"" _ escape_xml(term.get_datatype().get_value()) _
-			"\"" if term.get_lang() eq "" and term.get_datatype() != null;
+			"\"" if term.get_lang() eq "" and not (term.get_datatype() == null);
 		out _= ">" _ escape_xml(term.get_value()) _ "</literal>";
 	}
 	out _= "</binding>";
@@ -148,7 +148,7 @@ function sparql_results_xml ( Dict result ) {
 		out _= "<result>";
 		for ( let var_name in result{variables} ) {
 			let term := row.get(var_name, null);
-			out _= _sparql_xml_term( var_name, term ) if term != null;
+			out _= _sparql_xml_term( var_name, term ) if not (term == null);
 		}
 		out _= "</result>\n";
 	}
@@ -157,7 +157,7 @@ function sparql_results_xml ( Dict result ) {
 }
 
 function _csv_escape ( String text ) {
-	let needs_quote := text ~ /[",\r\n]/;
+	let needs_quote := text ~ /[\x22,\r\n]/;
 	let out := replace( text, "\"", "\"\"", "g" );
 	return needs_quote ? "\"" _ out _ "\"" : out;
 }

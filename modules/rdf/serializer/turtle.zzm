@@ -127,7 +127,7 @@ class TurtleSerializer with RdfSerializer {
 	method _iri ( String iri, Boolean prefer_qname := false ) {
 		if ( prefer_qname or _turtle_matches_abbreviation( iri, abbreviate ) ) {
 			let qname := self._qname(iri);
-			return qname if qname != null;
+			return qname if not (qname == null);
 		}
 		return "<" _ _nt_escape_iri(iri) _ ">";
 	}
@@ -186,7 +186,7 @@ class TurtleSerializer with RdfSerializer {
 			if ( role eq "predicate" ) {
 				return self._iri( term.get_value(), true );
 			}
-			if ( role eq "object" and triple != null and
+			if ( role eq "object" and not (triple == null) and
 				_turtle_is_rdf_iri( triple.get_predicate(), "type" ) ) {
 				return self._iri( term.get_value(), true );
 			}
@@ -237,7 +237,7 @@ class TurtleSerializer with RdfSerializer {
 		let key := rdf_term_key(term);
 		return self._blank_label(term) unless plan{bunch_map}.exists(key);
 		let bunch := plan{bunch_map}.get(key);
-		if ( bunch{inline} and bunch{list} != null and not bunch{done} ) {
+		if ( bunch{inline} and not (bunch{list} == null) and not bunch{done} ) {
 			return self._list( bunch, plan );
 		}
 		if ( bunch{inline} and not bunch{done} ) {
@@ -344,7 +344,7 @@ class TurtleSerializer with RdfSerializer {
 		let opts := {
 			labelling: labelling,
 		};
-		if ( graph != null ) {
+		if ( not (graph == null) ) {
 			opts.set( "graph_key", rdf_term_key(graph) );
 		}
 		return opts;

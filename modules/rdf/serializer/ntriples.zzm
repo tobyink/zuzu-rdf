@@ -157,7 +157,7 @@ function _nt_term ( term ) {
 	if ( term instanceof RDFLiteral ) {
 		let out := "\"" _ _nt_escape(term.get_value()) _ "\"";
 		out _= "@" _ term.get_lang() if term.get_lang() ne "";
-		if ( term.get_lang() eq "" and term.get_datatype() != null and
+		if ( term.get_lang() eq "" and not (term.get_datatype() == null) and
 			rdf_term_key(term.get_datatype()) ne
 			rdf_term_key(rdf_iri(XSD_NS _ "string")) ) {
 			out _= "^^<" _ _nt_escape_iri(term.get_datatype().get_value()) _ ">";

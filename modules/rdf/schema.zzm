@@ -169,13 +169,13 @@ function _rdfs_super_terms ( term, Array closure ) {
 }
 
 function _rdfs_matches ( quad, subject, predicate, object, graph ) {
-	return false if subject != null and
+	return false if not (subject == null) and
 		not rdf_term_equals( quad.get_subject(), subject );
-	return false if predicate != null and
+	return false if not (predicate == null) and
 		not rdf_term_equals( quad.get_predicate(), predicate );
-	return false if object != null and
+	return false if not (object == null) and
 		not rdf_term_equals( quad.get_object(), object );
-	return false if graph != null and
+	return false if not (graph == null) and
 		not rdf_term_equals( quad.get_graph(), graph );
 	return true;
 }

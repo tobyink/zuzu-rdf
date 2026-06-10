@@ -71,7 +71,7 @@ from rdf/parser/turtle import
 	_turtle_directive,
 	_turtle_predicate_object_list,
 	_turtle_subject;
-from rdf/term import RDFBlank, RDFIRI, rdf_default_graph;
+from rdf/term import RDFBlank, RDFError, RDFIRI, rdf_default_graph;
 
 function _trig_starts_graph_keyword ( RDFReader reader ) {
 	return reader._starts_ci("GRAPH ") or

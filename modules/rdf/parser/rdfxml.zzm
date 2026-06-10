@@ -251,9 +251,9 @@ function _rdfxml_child_context ( Dict parent, node ) {
 	let base := parent{base};
 	let lang := parent{lang};
 	let xml_base := _rdfxml_attr( node, XML_NS, "base" );
-	base := _rdfxml_resolve( base, xml_base ) if xml_base != null;
+	base := _rdfxml_resolve( base, xml_base ) if not (xml_base == null);
 	let xml_lang := _rdfxml_attr( node, XML_NS, "lang" );
-	lang := xml_lang if xml_lang != null;
+	lang := xml_lang if not (xml_lang == null);
 	return { base: base, lang: lang };
 }
 
@@ -337,11 +337,11 @@ function _rdfxml_subject ( parser, node, Dict ctx ) {
 	_rdfxml_error("node element has multiple subject attributes")
 		if subject_attrs.length() > 1;
 	let about := _rdfxml_attr( node, RDF_NS, "about" );
-	return rdf_iri(_rdfxml_resolve( ctx{base}, about )) if about != null;
+	return rdf_iri(_rdfxml_resolve( ctx{base}, about )) if not (about == null);
 	let id := _rdfxml_attr( node, RDF_NS, "ID" );
-	return _rdfxml_id_iri( parser, ctx, id ) if id != null;
+	return _rdfxml_id_iri( parser, ctx, id ) if not (id == null);
 	let node_id := _rdfxml_attr( node, RDF_NS, "nodeID" );
-	return _rdfxml_node_id(node_id) if node_id != null;
+	return _rdfxml_node_id(node_id) if not (node_id == null);
 	return parser.fresh_blank();
 }
 
@@ -400,7 +400,7 @@ function _rdfxml_namespace_attrs ( node ) {
 	let ordered := [];
 	let chain := [];
 	let cursor := node;
-	while ( cursor != null and cursor.nodeKind() eq "element" ) {
+	while ( not (cursor == null) and cursor.nodeKind() eq "element" ) {
 		chain.push(cursor);
 		cursor := cursor.parentNode();
 	}
@@ -509,7 +509,7 @@ function _rdfxml_collection ( parser, node, Dict ctx, Array out ) {
 
 function _rdfxml_property_object ( parser, node, Dict ctx, Array out ) {
 	let parse_type := _rdfxml_attr( node, RDF_NS, "parseType" );
-	if ( parse_type != null ) {
+	if ( not (parse_type == null) ) {
 		if ( parse_type eq "Resource" ) {
 			let blank := parser.fresh_blank();
 			_rdfxml_parse_property_elements( parser, blank, node, ctx, out );
@@ -526,20 +526,20 @@ function _rdfxml_property_object ( parser, node, Dict ctx, Array out ) {
 	}
 
 	let resource := _rdfxml_attr( node, RDF_NS, "resource" );
-	if ( resource != null ) {
+	if ( not (resource == null) ) {
 		let object := rdf_iri(_rdfxml_resolve( ctx{base}, resource ));
 		_rdfxml_add_property_attrs( object, node, ctx, out );
 		return object;
 	}
 	let node_id := _rdfxml_attr( node, RDF_NS, "nodeID" );
-	if ( node_id != null ) {
+	if ( not (node_id == null) ) {
 		let object := _rdfxml_node_id(node_id);
 		_rdfxml_add_property_attrs( object, node, ctx, out );
 		return object;
 	}
 
 	let datatype := _rdfxml_attr( node, RDF_NS, "datatype" );
-	if ( datatype != null ) {
+	if ( not (datatype == null) ) {
 		_rdfxml_error("rdf:datatype property element has child elements")
 			if _rdfxml_element_children(node).length() > 0;
 		return rdf_literal(
@@ -624,7 +624,7 @@ function _rdfxml_parse_node_element ( parser, node, Dict parent_ctx,
 	}
 
 	let rdf_type := _rdfxml_attr( node, RDF_NS, "type" );
-	if ( rdf_type != null ) {
+	if ( not (rdf_type == null) ) {
 		out.push(rdf_quad(
 			subject,
 			rdf_iri(RDF_NS _ "type"),

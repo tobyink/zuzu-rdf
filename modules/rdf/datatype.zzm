@@ -177,7 +177,7 @@ function rdf_literal_numeric ( RDFLiteral literal ) {
 function rdf_literal_compare ( RDFLiteral left, RDFLiteral right ) {
 	let lnum := rdf_literal_numeric(left);
 	let rnum := rdf_literal_numeric(right);
-	if ( lnum != null and rnum != null ) {
+	if ( not (lnum == null) and not (rnum == null) ) {
 		return -1 if lnum < rnum;
 		return 1 if lnum > rnum;
 		return 0;

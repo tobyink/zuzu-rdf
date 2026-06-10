@@ -227,7 +227,7 @@ function _rdf_cli_selected_spec (
 	default_spec := null,
 ) {
 	let selected := [];
-	selected.push( "" _ opts.get(explicit) ) if opts.get(explicit) != null;
+	selected.push( "" _ opts.get(explicit) ) if not (opts.get(explicit) == null);
 	for ( let name in shortcuts.keys() ) {
 		selected.push( shortcuts.get(name) ) if opts.get(name);
 	}
@@ -276,7 +276,7 @@ function rdf_cli_results_format ( Dict opts ) {
 }
 
 function _rdf_cli_has_result_option ( Dict opts ) {
-	return true if opts{results} != null;
+	return true if not (opts{results} == null);
 	for ( let name in _rdf_cli_result_shortcuts().keys() ) {
 		return true if opts.get(name);
 	}
@@ -284,7 +284,7 @@ function _rdf_cli_has_result_option ( Dict opts ) {
 }
 
 function _rdf_cli_has_graph_output_option ( Dict opts ) {
-	return true if opts{serializer} != null or opts{prefix} != null;
+	return true if not (opts{serializer} == null) or not (opts{prefix} == null);
 	for ( let name in _rdf_cli_serializer_shortcuts().keys() ) {
 		return true if opts.get(name);
 	}
@@ -292,7 +292,7 @@ function _rdf_cli_has_graph_output_option ( Dict opts ) {
 }
 
 function _rdf_cli_has_query_option ( Dict opts ) {
-	return opts{query} != null or opts{"query-file"} != null or
+	return not (opts{query} == null) or not (opts{"query-file"} == null) or
 		_rdf_cli_has_result_option(opts);
 }
 
@@ -344,7 +344,7 @@ function rdf_cli_new_serializer ( String spec, Dict prefixes := {} ) {
 
 function rdf_cli_make_store ( Dict opts, Boolean for_loading ) {
 	die "rdf: --dsn and --sqlite cannot be combined"
-		if opts{dsn} != null and opts{sqlite} != null;
+		if not (opts{dsn} == null) and not (opts{sqlite} == null);
 	die "rdf: --replace and --no-install-schema cannot be combined"
 		if opts{replace} and opts{"no-install-schema"};
 
@@ -352,9 +352,9 @@ function rdf_cli_make_store ( Dict opts, Boolean for_loading ) {
 		? RDF_CLI_DEFAULT_STORE
 		: "" _ opts{store};
 	let klass := _rdf_cli_load_class(store_spec);
-	let dbh := opts{dsn} != null
+	let dbh := not (opts{dsn} == null)
 		? DB.connect( "" _ opts{dsn} )
-		: opts{sqlite} != null
+		: not (opts{sqlite} == null)
 			? DB.open( new Path( "" _ opts{sqlite} ) )
 			: DB.temp();
 
@@ -455,7 +455,7 @@ function rdf_cli_emit_counts ( Array counts ) {
 }
 
 function rdf_cli_write_output ( String text, output ) {
-	if ( output != null ) {
+	if ( not (output == null) ) {
 		( new Path( "" _ output ) ).spew_utf8(text);
 	}
 	else {
@@ -474,10 +474,10 @@ function rdf_cli_dump_store ( store, Dict opts ) {
 
 function rdf_cli_read_query ( Dict opts ) {
 	die "rdf: choose only one query source"
-		if opts{query} != null and opts{"query-file"} != null;
+		if not (opts{query} == null) and not (opts{"query-file"} == null);
 	die "rdf: --query or --query-file is required"
 		if opts{query} == null and opts{"query-file"} == null;
-	return "" _ opts{query} if opts{query} != null;
+	return "" _ opts{query} if not (opts{query} == null);
 	return ( new Path( "" _ opts{"query-file"} ) ).slurp_utf8();
 }
 
@@ -528,7 +528,7 @@ function rdf_cli_query_output ( Dict result, Dict opts ) {
 
 function _rdf_cli_validate_output_options ( Dict opts ) {
 	die "rdf: --stdout and --output cannot be combined"
-		if opts{stdout} and opts{output} != null;
+		if opts{stdout} and not (opts{output} == null);
 }
 
 function rdf_cli_parse_main ( argv ) {
@@ -569,7 +569,7 @@ function rdf_cli_parse_main ( argv ) {
 		counts := rdf_cli_load_inputs( store, opts, parsed{argv} );
 	}
 
-	if ( opts{stdout} or opts{output} != null ) {
+	if ( opts{stdout} or not (opts{output} == null) ) {
 		rdf_cli_write_output( rdf_cli_dump_store( store, opts ), opts{output} );
 	}
 	rdf_cli_emit_counts(counts) unless opts{quiet};
@@ -594,9 +594,9 @@ function rdf_cli_serialize_main ( argv ) {
 	die "rdf: query options are not accepted by serialize_rdf.zzs"
 		if _rdf_cli_has_query_option(opts);
 	die "rdf: parser options are not accepted by serialize_rdf.zzs"
-		if rdf_cli_parser_spec(opts) != null;
+		if not (rdf_cli_parser_spec(opts) == null);
 	die "rdf: parse-only options are not accepted by serialize_rdf.zzs"
-		if opts{base} != null or opts{graph} != null or
+		if not (opts{base} == null) or not (opts{graph} == null) or
 		opts{replace} or opts{"no-install-schema"};
 	_rdf_cli_validate_output_options(opts);
 
@@ -625,8 +625,8 @@ function rdf_cli_query_main ( argv ) {
 		die "rdf: query_rdf.zzs needs RDF inputs or --dsn/--sqlite"
 			if opts{dsn} == null and opts{sqlite} == null;
 		die "rdf: parser options require RDF input files"
-			if rdf_cli_parser_spec(opts) != null or opts{base} != null or
-			opts{graph} != null;
+			if not (rdf_cli_parser_spec(opts) == null) or not (opts{base} == null) or
+			not (opts{graph} == null);
 		die "rdf: parse-only options require RDF input files"
 			if opts{replace} or opts{"no-install-schema"};
 	}

@@ -170,7 +170,7 @@ function _parser_options ( PairList options ) {
 
 function _parser_result ( Array quads, PairList options ) {
 	let opts := _parser_options(options);
-	if ( opts{into} != null ) {
+	if ( not (opts{into} == null) ) {
 		opts{into}.add_quads(quads);
 		return opts{into};
 	}
@@ -322,11 +322,11 @@ function _rdf_resolve_iri ( String base, String ref ) {
 }
 
 function _is_ws ( value ) {
-	return value != null and value ~ /\s/;
+	return not (value == null) and value ~ /\s/;
 }
 
 function _is_hex ( value ) {
-	return value != null and value ~ /^[0-9A-Fa-f]$/;
+	return not (value == null) and value ~ /^[0-9A-Fa-f]$/;
 }
 
 function _is_name_base ( value ) {
@@ -420,14 +420,14 @@ class RDFReader {
 	}
 
 	method _skip_ws () {
-		while ( self._peek() != null ) {
+		while ( not (self._peek() == null) ) {
 			let ch := self._peek();
 			if ( ch ~ /\s/ ) {
 				self._next();
 				next;
 			}
 			if ( ch eq "#" ) {
-				while ( self._peek() != null and self._peek() ne "\n" ) {
+				while ( not (self._peek() == null) and self._peek() ne "\n" ) {
 					self._next();
 				}
 				next;
@@ -444,7 +444,7 @@ class RDFReader {
 
 	method _read_until ( String close ) {
 		let out := "";
-		while ( self._peek() != null ) {
+		while ( not (self._peek() == null) ) {
 			let ch := self._next();
 			return out if ch eq close;
 			if ( ch eq "\\" ) {
@@ -493,7 +493,7 @@ class RDFReader {
 
 	method _read_iri_body () {
 		let iri := "";
-		while ( self._peek() != null ) {
+		while ( not (self._peek() == null) ) {
 			let ch := self._next();
 			return iri if ch eq ">";
 			if ( ch eq "\\" ) {
@@ -546,7 +546,7 @@ class RDFReader {
 	method read_name () {
 		self._skip_ws();
 		let out := "";
-		while ( self._peek() != null ) {
+		while ( not (self._peek() == null) ) {
 			let ch := self._peek();
 			if ( ch eq "." ) {
 				let after := substr( source, pos + 1, 1 );
@@ -692,7 +692,7 @@ class RDFReader {
 			self._next();
 		}
 		let out := "";
-		while ( self._peek() != null ) {
+		while ( not (self._peek() == null) ) {
 			if ( long and self._starts(close) ) {
 				pos += 3;
 				return out;
@@ -736,14 +736,14 @@ class RDFReader {
 		self._expect("@");
 		let out := "";
 		self._error("Expected language tag") unless self._peek() ~ /^[A-Za-z]$/;
-		while ( self._peek() != null and self._peek() ~ /^[A-Za-z]$/ ) {
+		while ( not (self._peek() == null) and self._peek() ~ /^[A-Za-z]$/ ) {
 			out _= self._next();
 		}
 		while ( self._peek() eq "-" ) {
 			out _= self._next();
 			self._error("Expected language tag subtag")
 				unless self._peek() ~ /^[A-Za-z0-9]$/;
-			while ( self._peek() != null and
+			while ( not (self._peek() == null) and
 				self._peek() ~ /^[A-Za-z0-9]$/ ) {
 				out _= self._next();
 			}
@@ -790,7 +790,7 @@ class RDFReader {
 		if ( ch eq "+" or ch eq "-" ) {
 			self._next();
 		}
-		while ( self._peek() != null and
+		while ( not (self._peek() == null) and
 			contains( "0123456789.eE+-", self._peek() ) ) {
 			self._next();
 		}

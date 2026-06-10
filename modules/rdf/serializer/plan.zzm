@@ -264,7 +264,7 @@ function rdf_serializer_plan ( Array quads, Dict options := {} ) {
 			bunch{subject},
 			bunch_map,
 		);
-		if ( items != null ) {
+		if ( not (items == null) ) {
 			bunch.set( "list", items );
 			_serializer_plan_mark_list_cells( bunch{subject}, bunch_map );
 			for ( let item in items ) {

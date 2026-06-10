@@ -128,7 +128,7 @@ class RdfXmlSerializer with RdfSerializer {
 
 	method _qname ( String iri, Boolean required := true ) {
 		let known := self._qname_known(iri);
-		return known if known != null;
+		return known if not (known == null);
 		let parts := _rdfxml_split_iri(iri);
 		if ( parts == null ) {
 			die "rdf: cannot serialize IRI as RDF/XML QName: " _ iri
@@ -179,7 +179,7 @@ class RdfXmlSerializer with RdfSerializer {
 			if ( _rdfxml_is_rdf_iri( triple.get_predicate(), "type" ) and
 				triple.get_object() instanceof RDFIRI ) {
 				let qname := self._qname( triple.get_object().get_value(), false );
-				return { name: qname, skip: triple } if qname != null;
+				return { name: qname, skip: triple } if not (qname == null);
 			}
 		}
 		return { name: "rdf:Description", skip: null };
@@ -288,7 +288,7 @@ class RdfXmlSerializer with RdfSerializer {
 		let key := rdf_term_key(object);
 		if ( plan{bunch_map}.exists(key) ) {
 			let bunch := plan{bunch_map}.get(key);
-			if ( bunch{inline} and bunch{list} != null and not bunch{done} and
+			if ( bunch{inline} and not (bunch{list} == null) and not bunch{done} and
 				self._list_is_resource_only(bunch) ) {
 				return self._collection_property(
 					name,

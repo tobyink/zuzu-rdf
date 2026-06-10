@@ -130,7 +130,7 @@ class RDFBuilder {
 
 	method literal ( value, String lang := "", datatype := null ) {
 		let dt := datatype;
-		dt := self.iri(datatype) if datatype != null and
+		dt := self.iri(datatype) if not (datatype == null) and
 			not ( datatype instanceof RDFIRI );
 		return rdf_literal( value, lang, dt );
 	}

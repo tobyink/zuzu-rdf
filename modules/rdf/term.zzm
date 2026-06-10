@@ -178,7 +178,7 @@ class RDFLiteral {
 	method to_String () {
 		let out := "\"" _ value _ "\"";
 		out _= "@" _ lang if lang ne "";
-		if ( lang eq "" and datatype != null and rdf_term_key(datatype) ne
+		if ( lang eq "" and not (datatype == null) and rdf_term_key(datatype) ne
 			rdf_term_key(rdf_iri(XSD_NS _ "string")) ) {
 			out _= "^^" _ datatype.to_String();
 		}

@@ -71,7 +71,7 @@ License version 2.
 
 from rdf/ns import OWL_NS, RDF_NS, RDFS_NS, XSD_NS;
 from rdf/term import RDFIRI, rdf_iri;
-from std/string import contains, split, starts_with, substr;
+from std/string import contains, index, split, starts_with, substr;
 
 class RDFPrefixRegistry {
 	let Dict prefixes := {};
@@ -99,10 +99,13 @@ class RDFPrefixRegistry {
 	method expand ( String value ) {
 		return rdf_iri(value) if starts_with( value, "http://" ) or
 			starts_with( value, "https://" ) or starts_with( value, "urn:" );
-		let parts := split( value, ":", 2 );
-		die "rdf: prefixed name expected" unless parts.length() == 2;
-		die "rdf: unknown prefix " _ parts[0] unless prefixes.exists(parts[0]);
-		return rdf_iri(prefixes.get(parts[0]) _ parts[1]);
+		// index/substr rather than a limit-2 split: zuzu-js truncates
+		// the tail, breaking local names that contain ":" themselves.
+		let colon := index( value, ":" );
+		die "rdf: prefixed name expected" if colon < 0;
+		let prefix := substr( value, 0, colon );
+		die "rdf: unknown prefix " _ prefix unless prefixes.exists(prefix);
+		return rdf_iri(prefixes.get(prefix) _ substr( value, colon + 1 ));
 	}
 
 	method compact ( value ) {

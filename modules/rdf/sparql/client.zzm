@@ -442,11 +442,11 @@ class SPARQLProtocolClient {
 		values.set(
 			"default-graph-uri",
 			opts.get( "default_graph_uri", default_graph_uri ),
-		) if opts.exists("default_graph_uri") or default_graph_uri != null;
+		) if opts.exists("default_graph_uri") or not (default_graph_uri == null);
 		values.set(
 			"named-graph-uri",
 			opts.get( "named_graph_uri", named_graph_uri ),
-		) if opts.exists("named_graph_uri") or named_graph_uri != null;
+		) if opts.exists("named_graph_uri") or not (named_graph_uri == null);
 		let response := self._request(
 			_sparql_client_form(values),
 			"application/sparql-results+json, " _

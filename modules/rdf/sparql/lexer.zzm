@@ -144,8 +144,10 @@ function _sparql_read_string (
 				pos += 10;
 				next;
 			}
+			// \x22/\x27 because literal quotes inside a regex break
+			// the zuzu-js tokenizer (functions after this one vanish).
 			_sparql_lexer_error( "invalid escape \\" _ esc, line, column )
-				unless esc ~ /^[btnrf"'\\]$/;
+				unless esc ~ /^[btnrf\x22\x27\\]$/;
 			value _= "\\" _ esc;
 			pos += 2;
 			next;

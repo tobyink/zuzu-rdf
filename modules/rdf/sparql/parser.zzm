@@ -171,14 +171,14 @@ class SparqlSyntaxParser {
 		let prefixes := {};
 		let base := null;
 		while ( true ) {
-			if ( self._accept_keyword("BASE") != null ) {
+			if ( not (self._accept_keyword("BASE") == null) ) {
 				let iri := self._advance();
 				_sparql_parse_error( "BASE expects IRI", iri )
 					unless iri{kind} eq "iri";
 				base := iri{value};
 				next;
 			}
-			if ( self._accept_keyword("PREFIX") != null ) {
+			if ( not (self._accept_keyword("PREFIX") == null) ) {
 				let prefix := self._advance();
 				self._validate_prefix_name(prefix);
 				let iri := self._advance();
@@ -203,7 +203,7 @@ class SparqlSyntaxParser {
 		while ( not self._eof() ) {
 			let token := self._advance();
 			if ( token{value} eq "(" ) {
-				if ( previous != null and previous{kind} eq "word" and
+				if ( not (previous == null) and previous{kind} eq "word" and
 					_sparql_is_aggregate(previous{value}) and aggregate eq ""
 				) {
 					aggregate := uc(previous{value});
@@ -240,8 +240,8 @@ class SparqlSyntaxParser {
 		let aliases := [];
 		let star := false;
 		let distinct := false;
-		if ( self._accept_keyword("DISTINCT") != null or
-			self._accept_keyword("REDUCED") != null
+		if ( not (self._accept_keyword("DISTINCT") == null) or
+			not (self._accept_keyword("REDUCED") == null)
 		) {
 			distinct := true;
 		}
@@ -249,7 +249,7 @@ class SparqlSyntaxParser {
 			last if self._peek_value() eq "{" or
 				_sparql_is_keyword_token( self._peek(), "WHERE" ) or
 				_sparql_is_keyword_token( self._peek(), "FROM" );
-			if ( self._accept("*") != null ) {
+			if ( not (self._accept("*") == null) ) {
 				star := true;
 				next;
 			}
@@ -285,7 +285,7 @@ class SparqlSyntaxParser {
 	}
 
 	method _skip_dataset_clauses () {
-		while ( self._accept_keyword("FROM") != null ) {
+		while ( not (self._accept_keyword("FROM") == null) ) {
 			self._accept_keyword("NAMED");
 			let token := self._advance();
 			_sparql_parse_error( "FROM expects graph IRI", token )
@@ -428,7 +428,7 @@ class SparqlSyntaxParser {
 				previous_group := true;
 				next;
 			}
-			if ( self._accept_keyword("UNION") != null ) {
+			if ( not (self._accept_keyword("UNION") == null) ) {
 				bgp_only := false;
 				_sparql_parse_error( "UNION requires grouped operands", self._peek() )
 					unless previous_group and self._peek_value() eq "{";
@@ -459,11 +459,11 @@ class SparqlSyntaxParser {
 			if ( _sparql_is_keyword_token( self._peek(), "FILTER" ) ) {
 				bgp_only := false;
 				self._advance();
-				if ( self._accept_keyword("NOT") != null ) {
+				if ( not (self._accept_keyword("NOT") == null) ) {
 					self._expect_keyword("EXISTS");
 					self._parse_group();
 				}
-				else if ( self._accept_keyword("EXISTS") != null ) {
+				else if ( not (self._accept_keyword("EXISTS") == null) ) {
 					self._parse_group();
 				}
 				else {
@@ -494,6 +494,27 @@ class SparqlSyntaxParser {
 				previous_group := false;
 				next;
 			}
+			if ( self._peek_value() eq "[" ) {
+				// Blank node property list: consume the bracketed
+				// section (registering any variables inside) and treat
+				// it as a complete statement for the arity check, since
+				// it may stand alone as a triples block.
+				let depth := 0;
+				while ( not self._eof() ) {
+					let v := self._peek_value();
+					if ( v eq "[" ) { depth++; }
+					else if ( v eq "]" ) { depth--; }
+					else if ( _sparql_is_var(self._peek()) ) {
+						let name := _sparql_var_name(self._peek());
+						vars.push(name) unless _sparql_array_has(vars, name);
+					}
+					self._advance();
+					last if depth == 0;
+				}
+				statement_terms := statement_terms + 3;
+				previous_group := false;
+				next;
+			}
 			if ( _sparql_is_var(self._peek()) ) {
 				let name := _sparql_var_name(self._advance());
 				vars.push(name) unless _sparql_array_has(vars, name);
@@ -513,7 +534,7 @@ class SparqlSyntaxParser {
 
 	method _parse_group_by ( Boolean stop_at_group_end := false ) {
 		let vars := [];
-		if ( self._accept_keyword("GROUP") != null ) {
+		if ( not (self._accept_keyword("GROUP") == null) ) {
 			self._expect_keyword("BY");
 			while ( not self._eof() ) {
 				last if stop_at_group_end and self._peek_value() eq "}";
@@ -540,13 +561,13 @@ class SparqlSyntaxParser {
 		let group_vars := self._parse_group_by(stop_at_group_end);
 		while ( not self._eof() ) {
 			last if stop_at_group_end and self._peek_value() eq "}";
-			if ( self._accept_keyword("HAVING") != null ) {
+			if ( not (self._accept_keyword("HAVING") == null) ) {
 				while ( self._peek_value() eq "(" ) {
 					self._skip_parenthesised();
 				}
 				next;
 			}
-			if ( self._accept_keyword("ORDER") != null ) {
+			if ( not (self._accept_keyword("ORDER") == null) ) {
 				self._expect_keyword("BY");
 				while ( not self._eof() and
 					not _sparql_is_keyword_token( self._peek(), "LIMIT" ) and
@@ -562,8 +583,8 @@ class SparqlSyntaxParser {
 				}
 				next;
 			}
-			if ( self._accept_keyword("LIMIT") != null or
-				self._accept_keyword("OFFSET") != null
+			if ( not (self._accept_keyword("LIMIT") == null) or
+				not (self._accept_keyword("OFFSET") == null)
 			) {
 				self._advance();
 				next;
@@ -809,7 +830,7 @@ class SparqlSyntaxParser {
 		let operations := [];
 		let seen_bnodes := {};
 		while ( not self._eof() ) {
-			if ( self._accept(";") != null ) {
+			if ( not (self._accept(";") == null) ) {
 				_sparql_parse_error( "empty update operation", self._peek() );
 			}
 			let op := self._parse_update_operation();
@@ -838,7 +859,7 @@ class SparqlSyntaxParser {
 		tokens := sparql_lex(source);
 		pos := 0;
 		let prologue := self._parse_prologue();
-		if ( self._accept_keyword("BINDINGS") != null ) {
+		if ( not (self._accept_keyword("BINDINGS") == null) ) {
 			_sparql_parse_error( "BINDINGS is obsolete", tokens[pos - 1] );
 		}
 		let token := self._peek();

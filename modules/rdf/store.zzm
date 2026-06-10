@@ -216,11 +216,13 @@ class RDFStore {
 	let String prefix with get := "rdf_";
 
 	static method temp () {
-		return new RDFStore(dbh: DB.temp());
+		// sqlite_unicode keeps text round-trips lossless on zuzu.pl;
+		// the other runtimes ignore the setting.
+		return new RDFStore(dbh: DB.temp({ sqlite_unicode: true }));
 	}
 
 	method __build__ () {
-		dbh := DB.temp() if dbh == null;
+		dbh := DB.temp({ sqlite_unicode: true }) if dbh == null;
 		backend := _backend(backend);
 		prefix := _ident(prefix);
 	}
@@ -479,7 +481,7 @@ class RDFStore {
 			" where g = ? limit 1",
 		);
 		q.execute(rdf_term_hash(g));
-		return q.next_array() != null;
+		return not (q.next_array() == null);
 	}
 
 	method copy_graph ( source := null, target := null ) {
@@ -580,22 +582,22 @@ class RDFStore {
 	method explain_find ( subject := null, predicate := null,
 		object := null, graph := null ) {
 		let selected_index := "primary";
-		if ( graph != null and subject != null and predicate != null ) {
+		if ( not (graph == null) and not (subject == null) and not (predicate == null) ) {
 			selected_index := prefix _ "quads_gsp";
 		}
-		else if ( predicate != null and object != null ) {
+		else if ( not (predicate == null) and not (object == null) ) {
 			selected_index := prefix _ "quads_pog";
 		}
-		else if ( subject != null and predicate != null ) {
+		else if ( not (subject == null) and not (predicate == null) ) {
 			selected_index := prefix _ "quads_sp";
 		}
 		return {
 			backend: backend,
 			index: selected_index,
-			subject_bound: subject != null,
-			predicate_bound: predicate != null,
-			object_bound: object != null,
-			graph_bound: graph != null,
+			subject_bound: not (subject == null),
+			predicate_bound: not (predicate == null),
+			object_bound: not (object == null),
+			graph_bound: not (graph == null),
 		};
 	}
 
@@ -603,19 +605,19 @@ class RDFStore {
 	graph := null ) {
 		let clauses := [];
 		let binds := [];
-		if ( subject != null ) {
+		if ( not (subject == null) ) {
 			clauses.push("s = ?");
 			binds.push(rdf_term_hash(subject));
 		}
-		if ( predicate != null ) {
+		if ( not (predicate == null) ) {
 			clauses.push("p = ?");
 			binds.push(rdf_term_hash(predicate));
 		}
-		if ( object != null ) {
+		if ( not (object == null) ) {
 			clauses.push("o = ?");
 			binds.push(rdf_term_hash(object));
 		}
-		if ( graph != null ) {
+		if ( not (graph == null) ) {
 			clauses.push("g = ?");
 			binds.push(rdf_term_hash(graph));
 		}

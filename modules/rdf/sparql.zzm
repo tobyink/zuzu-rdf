@@ -178,10 +178,13 @@ function _sparql_is_iri_start ( String text, Number pos ) {
 	return false unless substr( text, pos, 1 ) eq "<";
 	let i := pos + 1;
 	return false if i >= length text;
+	// "<=" is always the comparison operator; "=" later on may appear
+	// inside an IRI query string.
+	return false if substr( text, i, 1 ) eq "=";
 	while ( i < length text ) {
 		let ch := substr( text, i, 1 );
 		return true if ch eq ">";
-		return false if ch eq "=" or ch eq "\"" or ch ~ /\s/;
+		return false if ch eq "\"" or ch ~ /\s/;
 		i++;
 	}
 	return false;
@@ -354,7 +357,9 @@ function _sparql_prefixes ( String text ) {
 			prefixes.set( m[1], m[2] );
 			body.push(m[3]) if trim(m[3]) ne "";
 		}
-		else if ( clean ne "" ) {
+		else {
+			// Keep blank lines: they may be significant inside
+			// long-quoted literals.
 			body.push(line);
 		}
 	}
@@ -363,7 +368,9 @@ function _sparql_prefixes ( String text ) {
 
 function _sparql_resolve_iri ( String iri, Dict prefixes ) {
 	return iri if iri ~ /^[A-Za-z][A-Za-z0-9+.-]*:/;
-	return prefixes.get( "__base", "" ) _ iri;
+	let base := prefixes.get( "__base", "" );
+	return iri if base eq "";
+	return ( new RDFReader(source: "") ).set_base(base).resolve_iri(iri);
 }
 
 function _sparql_expand ( String token, Dict prefixes ) {
@@ -380,7 +387,7 @@ function _sparql_expand ( String token, Dict prefixes ) {
 		));
 	}
 	if ( starts_with( token, "\"" ) ) {
-		return ( new RDFReader(source: token) ).read_literal();
+		return ( new RDFReader(source: token, prefixes: prefixes) ).read_literal();
 	}
 	if ( lc(token) eq "true" or lc(token) eq "false" ) {
 		return rdf_literal( lc(token), "", rdf_iri(XSD_NS _ "boolean") );
@@ -395,11 +402,17 @@ function _sparql_expand ( String token, Dict prefixes ) {
 		return rdf_iri(RDF_NS _ "type");
 	}
 	if ( starts_with( token, "_:" ) ) {
-		return rdf_blank(substr( token, 2 ));
+		// Blank node labels in query patterns behave as
+		// non-selectable variables, not concrete terms.
+		return { variable: "__bnode_" _ substr( token, 2 ) };
 	}
-	let parts := split( token, ":", 2 );
-	if ( parts.length() == 2 and prefixes.exists(parts[0]) ) {
-		return rdf_iri(prefixes.get(parts[0]) _ parts[1]);
+	// index/substr rather than a limit-2 split: zuzu-js truncates the
+	// tail, breaking local names that contain ":" themselves.
+	let colon := index( token, ":" );
+	if ( colon >= 0 and prefixes.exists(substr( token, 0, colon )) ) {
+		return rdf_iri(
+			prefixes.get(substr( token, 0, colon )) _ substr( token, colon + 1 ),
+		);
 	}
 	throw new SPARQLError(message: "SPARQL token not understood: " _ token);
 }
@@ -506,7 +519,7 @@ function _sparql_parse_path ( String raw, Dict prefixes ) {
 		return { path: "seq", items: items };
 	}
 	let post := _sparql_path_postfix(clean);
-	if ( post != null ) {
+	if ( not (post == null) ) {
 		return {
 			path: post{op},
 			item: _sparql_parse_path( post{body}, prefixes ),
@@ -676,6 +689,21 @@ function _sparql_tokenize_patterns ( String where ) {
 			next;
 		}
 		if ( ch eq "\"" ) {
+			if ( substr( where, i, 3 ) eq "\"\"\"" ) {
+				// Long string literal: normalize to a short string token.
+				let close := index( substr( where, i + 3 ), "\"\"\"" );
+				if ( close >= 0 ) {
+					let content := substr( where, i + 3, close );
+					content := replace( content, "\\\\", "\\\\", "g" );
+					content := replace( content, "\"", "\\\"", "g" );
+					content := replace( content, "\n", "\\n", "g" );
+					content := replace( content, "\r", "\\r", "g" );
+					content := replace( content, "\t", "\\t", "g" );
+					token _= "\"" _ content _ "\"";
+					i := i + 3 + close + 3;
+					next;
+				}
+			}
 			token _= ch;
 			quoted := true;
 			i++;
@@ -696,7 +724,7 @@ function _sparql_tokenize_patterns ( String where ) {
 			next;
 		}
 		if ( ch eq "(" and token eq "" and
-			substr( where, i + 1, 1 ) ~ /[\?\"_\[0-9\)]/
+			substr( where, i + 1, 1 ) ~ /[\?\x22_\[0-9\)<]/
 		) {
 			out.push(ch);
 			i++;
@@ -765,8 +793,13 @@ function _sparql_parse_patterns ( String text, Dict prefixes, graph := null ) {
 			subject := subject_item{spec};
 			anon_index := subject_item{anon_index};
 			i := subject_item{next};
-			throw new SPARQLError(message: "SPARQL predicate expected")
-				if i >= raw.length();
+			if ( i >= raw.length() or raw[i] eq "." ) {
+				// A blank node property list or collection may stand
+				// alone as a complete triples block.
+				subject := null;
+				i++ if i < raw.length();
+				next;
+			}
 			predicate := raw[i];
 			i++;
 		}
@@ -879,7 +912,7 @@ function _sparql_parse_values_blocks ( String text, Dict prefixes ) {
 		let rows := [];
 		for ( let term in _sparql_parse_values_terms( m[2], prefixes ) ) {
 			let row := {};
-			row.set( var_name, term ) if term != null;
+			row.set( var_name, term ) if not (term == null);
 			rows.push(row);
 		}
 		blocks.push({ vars: [ var_name ], rows: rows });
@@ -1132,7 +1165,6 @@ function _sparql_numeric_result_literal_like ( source, value ) {
 
 function _sparql_effective_boolean ( value ) {
 	return false if value == null;
-	return value if value instanceof Boolean;
 	if ( value instanceof RDFLiteral ) {
 		let text := value.get_value();
 		let datatype := value.get_datatype().get_value();
@@ -1140,7 +1172,11 @@ function _sparql_effective_boolean ( value ) {
 			if datatype eq XSD_NS _ "boolean";
 		return text ne "";
 	}
-	return true;
+	return true if value instanceof RDFIRI or value instanceof RDFBlank;
+	// Raw scalars (e.g. the Boolean from BOUND): use language
+	// truthiness, which works on every runtime — on zuzu.pl a bare
+	// false is not `instanceof Boolean`.
+	return value ? true : false;
 }
 
 function _sparql_expr_args ( String text ) {
@@ -1617,7 +1653,7 @@ function _sparql_concat_result ( Array values, String text ) {
 			last;
 		}
 	}
-	return rdf_literal( text, lang ) if lang != null and lang ne "";
+	return rdf_literal( text, lang ) if not (lang == null) and lang ne "";
 	return rdf_literal( text, "", rdf_iri(XSD_NS _ "string") );
 }
 
@@ -1898,7 +1934,7 @@ function _sparql_eval_function ( binding, String name, Array args,
 		for ( let arg in args ) {
 			try {
 				let value := _sparql_eval_expr( binding, arg, prefixes );
-				return value if value != null;
+				return value if not (value == null);
 			}
 			catch {
 			}
@@ -1940,8 +1976,8 @@ function _sparql_eval_expr ( binding, String raw, Dict prefixes ) {
 		}
 		return _sparql_boolean_literal(false);
 	}
-	if ( clean ~ /^("[\s\S]*"\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/ ) {
-		let m := clean ~ /^("[\s\S]*"\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/;
+	if ( clean ~ /^(\x22[\s\S]*\x22\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/ ) {
+		let m := clean ~ /^(\x22[\s\S]*\x22\^\^)([A-Za-z][A-Za-z0-9_-]*:[A-Za-z_][A-Za-z0-9_-]*)$/;
 		let datatype := _sparql_expand( m[2], prefixes );
 		if ( datatype instanceof RDFIRI ) {
 			return ( new RDFReader(
@@ -1953,7 +1989,7 @@ function _sparql_eval_expr ( binding, String raw, Dict prefixes ) {
 		clean,
 		[ "!=", "<=", ">=", "=", "<", ">" ],
 	);
-	if ( compare != null ) {
+	if ( not (compare == null) ) {
 		let left := _sparql_eval_expr(
 			binding,
 			substr( clean, 0, compare{pos} ),
@@ -1975,7 +2011,7 @@ function _sparql_eval_expr ( binding, String raw, Dict prefixes ) {
 		return _sparql_boolean_literal(order >= 0);
 	}
 	let add := _sparql_find_top_expr_operator( clean, [ "+", "-" ] );
-	if ( add != null ) {
+	if ( not (add == null) ) {
 		let left := _sparql_eval_expr( binding, substr( clean, 0, add{pos} ), prefixes );
 		let right := _sparql_eval_expr(
 			binding,
@@ -1986,7 +2022,7 @@ function _sparql_eval_expr ( binding, String raw, Dict prefixes ) {
 		return _sparql_numeric_expr_literal( left, right, add{op} );
 	}
 	let mul := _sparql_find_top_expr_operator( clean, [ "*", "/" ] );
-	if ( mul != null ) {
+	if ( not (mul == null) ) {
 		let left := _sparql_eval_expr( binding, substr( clean, 0, mul{pos} ), prefixes );
 		let right := _sparql_eval_expr(
 			binding,
@@ -2048,7 +2084,7 @@ function _sparql_eval_filter ( RDFStore store, String raw, Dict prefixes,
 		).length() > 0;
 	}
 	let or_op := _sparql_find_top_expr_operator( clean, [ "||" ] );
-	if ( or_op != null ) {
+	if ( not (or_op == null) ) {
 		return _sparql_eval_filter(
 			store,
 			substr( clean, 0, or_op{pos} ),
@@ -2064,7 +2100,7 @@ function _sparql_eval_filter ( RDFStore store, String raw, Dict prefixes,
 		);
 	}
 	let and_op := _sparql_find_top_expr_operator( clean, [ "&&" ] );
-	if ( and_op != null ) {
+	if ( not (and_op == null) ) {
 		return _sparql_eval_filter(
 			store,
 			substr( clean, 0, and_op{pos} ),
@@ -2097,7 +2133,7 @@ function _sparql_apply_bind ( Array bindings, String raw, Dict prefixes ) {
 	for ( let binding in bindings ) {
 		let next_binding := _sparql_copy_binding(binding);
 		let value := _sparql_eval_expr( binding, b[1], prefixes );
-		next_binding.set( b[2], value ) if value != null;
+		next_binding.set( b[2], value ) if not (value == null);
 		out.push(next_binding);
 	}
 	return out;
@@ -2118,7 +2154,7 @@ function _sparql_join_bindings ( Array left, Array right ) {
 	for ( let binding in left ) {
 		for ( let row in right ) {
 			let merged := _sparql_merge_binding( binding, row );
-			out.push(merged) if merged != null;
+			out.push(merged) if not (merged == null);
 		}
 	}
 	return out;
@@ -2246,7 +2282,7 @@ function _sparql_json_bindings ( data ) {
 		let binding := {};
 		for ( let key in row.keys() ) {
 			let term := _sparql_term_from_json(row.get(key));
-			binding.set( key, term ) if term != null;
+			binding.set( key, term ) if not (term == null);
 		}
 		out.push(binding);
 	}
@@ -2285,7 +2321,7 @@ function _sparql_eval_service_group ( Array bindings, String endpoint_token,
 		try {
 			for ( let row in _sparql_service_query( endpoint.get_value(), query ) ) {
 				let merged := _sparql_merge_binding( binding, row );
-				out.push(merged) if merged != null;
+				out.push(merged) if not (merged == null);
 			}
 		}
 		catch ( e ) {
@@ -2356,7 +2392,7 @@ function _sparql_eval_subquery_group ( RDFStore store, Array bindings,
 	String body, Dict prefixes, graph := null ) {
 	let query := _sparql_prefix_text(prefixes) _ "\n" _ body;
 	let defaults := prefixes.get( "__dataset_default", [] );
-	if ( graph != null ) {
+	if ( not (graph == null) ) {
 		defaults := graph instanceof Dict and graph.exists("default_graphs")
 			? graph{default_graphs}
 			: [ graph ];
@@ -2373,7 +2409,7 @@ function _sparql_eval_subquery_group ( RDFStore store, Array bindings,
 	for ( let binding in bindings ) {
 		for ( let row in result{results} ) {
 			let merged := _sparql_merge_binding( binding, row );
-			out.push(merged) if merged != null;
+			out.push(merged) if not (merged == null);
 		}
 	}
 	return out;
@@ -2640,7 +2676,7 @@ function _sparql_parse_select_projection ( String head ) {
 					let m := inner ~ /^(.+)\s+AS\s+\?([A-Za-z][A-Za-z0-9_]*)$/i;
 					let alias := { expr: trim(m[1]), var: m[2] };
 					let aggregate := _sparql_parse_aggregate(alias{expr});
-					if ( aggregate != null ) {
+					if ( not (aggregate == null) ) {
 						alias.set( "aggregate", aggregate{kind} );
 						alias.set( "distinct", aggregate{distinct} );
 						alias.set( "arg", aggregate{arg} );
@@ -2679,10 +2715,13 @@ function _sparql_parse_aggregate ( String raw ) {
 	}
 	let separator := " ";
 	if ( kind eq "GROUP_CONCAT" and contains( uc(arg), "SEPARATOR" ) ) {
-		let parts := split( arg, ";", 2 );
-		arg := trim(parts[0]);
-		if ( parts[1] ~ /SEPARATOR\s*=\s*("[^"]*")/i ) {
-			let sm := parts[1] ~ /SEPARATOR\s*=\s*("[^"]*")/i;
+		// index/substr rather than a limit-2 split: zuzu-js truncates
+		// the tail, and the separator string may itself contain ";".
+		let semi := index( arg, ";" );
+		let sep_clause := semi < 0 ? "" : substr( arg, semi + 1 );
+		arg := trim(semi < 0 ? arg : substr( arg, 0, semi ));
+		if ( sep_clause ~ /SEPARATOR\s*=\s*(\x22[^\x22]*\x22)/i ) {
+			let sm := sep_clause ~ /SEPARATOR\s*=\s*(\x22[^\x22]*\x22)/i;
 			separator := ( new RDFReader(source: sm[1]) ).read_literal().get_value();
 		}
 	}
@@ -3374,7 +3413,7 @@ function _sparql_eval_path_pattern ( RDFStore store, Array bindings,
 		if ( s == null or s instanceof Dict ) {
 			starts := _sparql_graph_nodes( store, g );
 			if ( zero_path and not( pattern[2] instanceof Dict ) and
-				o != null and not( o instanceof Dict ) and
+				not (o == null) and not( o instanceof Dict ) and
 				not _sparql_term_array_has( starts, o )
 			) {
 				starts.push(o);
@@ -3395,14 +3434,14 @@ function _sparql_eval_path_pattern ( RDFStore store, Array bindings,
 			if ( zero_path and not _sparql_term_array_has( endpoints, start ) ) {
 				if ( not( pattern[0] instanceof Dict ) or
 					( not( pattern[2] instanceof Dict ) and
-						o != null and not( o instanceof Dict ) and
+						not (o == null) and not( o instanceof Dict ) and
 						rdf_term_equals( o, start ) )
 				) {
 					endpoints.unshift(start);
 				}
 			}
 			for ( let term in endpoints ) {
-				next if o != null and not( o instanceof Dict ) and
+				next if not (o == null) and not( o instanceof Dict ) and
 					not rdf_term_equals( o, term );
 				let b2 := _bind_match( b1, pattern[2], term );
 				next if b2 == null;
@@ -3557,7 +3596,7 @@ function _sparql_apply_values ( Array bindings, Array blocks ) {
 		for ( let binding in current_bindings ) {
 			for ( let row in block{rows} ) {
 				let merged := _sparql_merge_binding( binding, row );
-				out.push(merged) if merged != null;
+				out.push(merged) if not (merged == null);
 			}
 		}
 		current_bindings := out;
@@ -3572,7 +3611,7 @@ function _sparql_apply_aliases ( Array bindings, Array aliases, Dict prefixes ) 
 		let next_binding := _sparql_copy_binding(binding);
 		for ( let alias in aliases ) {
 			let value := _sparql_eval_expr( next_binding, alias{expr}, prefixes );
-			next_binding.set( alias.get("var"), value ) if value != null;
+			next_binding.set( alias.get("var"), value ) if not (value == null);
 		}
 		out.push(next_binding);
 	}
@@ -3612,7 +3651,7 @@ function _sparql_prepare_group_bindings (
 		for ( let spec in vars ) {
 			if ( spec instanceof Dict and spec.exists("expr") ) {
 				let value := _sparql_eval_expr( next_binding, spec{expr}, prefixes );
-				next_binding.set( spec.get("var"), value ) if value != null;
+				next_binding.set( spec.get("var"), value ) if not (value == null);
 			}
 		}
 		out.push(next_binding);
@@ -3835,7 +3874,7 @@ function _sparql_eval_aggregate_expr (
 ) {
 	let clean := trim(_sparql_outer_parens(raw));
 	let or_op := _sparql_find_top_expr_operator( clean, [ "||" ] );
-	if ( or_op != null ) {
+	if ( not (or_op == null) ) {
 		return _sparql_boolean_literal(
 			_sparql_effective_boolean(_sparql_eval_aggregate_expr(
 				rows,
@@ -3851,7 +3890,7 @@ function _sparql_eval_aggregate_expr (
 		);
 	}
 	let and_op := _sparql_find_top_expr_operator( clean, [ "&&" ] );
-	if ( and_op != null ) {
+	if ( not (and_op == null) ) {
 		return _sparql_boolean_literal(
 			_sparql_effective_boolean(_sparql_eval_aggregate_expr(
 				rows,
@@ -3870,7 +3909,7 @@ function _sparql_eval_aggregate_expr (
 		clean,
 		[ "!=", "<=", ">=", "=", "<", ">" ],
 	);
-	if ( compare != null ) {
+	if ( not (compare == null) ) {
 		let left := _sparql_eval_aggregate_expr(
 			rows,
 			binding,
@@ -3894,7 +3933,7 @@ function _sparql_eval_aggregate_expr (
 		return _sparql_boolean_literal(order >= 0);
 	}
 	let add := _sparql_find_top_expr_operator( clean, [ "+", "-" ] );
-	if ( add != null ) {
+	if ( not (add == null) ) {
 		let left := _sparql_eval_aggregate_expr(
 			rows,
 			binding,
@@ -3911,7 +3950,7 @@ function _sparql_eval_aggregate_expr (
 		return _sparql_numeric_expr_literal( left, right, add{op} );
 	}
 	let mul := _sparql_find_top_expr_operator( clean, [ "*", "/" ] );
-	if ( mul != null ) {
+	if ( not (mul == null) ) {
 		let left := _sparql_eval_aggregate_expr(
 			rows,
 			binding,
@@ -3928,7 +3967,7 @@ function _sparql_eval_aggregate_expr (
 		return _sparql_numeric_expr_literal( left, right, mul{op} );
 	}
 	let aggregate := _sparql_parse_aggregate(clean);
-	if ( aggregate != null ) {
+	if ( not (aggregate == null) ) {
 		return _sparql_eval_aggregate_alias(
 			rows,
 			{
@@ -3956,7 +3995,7 @@ function _sparql_apply_aggregates ( Array bindings, Array group_vars,
 		let binding := _sparql_group_seed( rows, group_vars );
 		for ( let alias in aggregate_aliases ) {
 			let value := _sparql_eval_aggregate_alias( rows, alias, prefixes );
-			binding.set( alias.get("var"), value ) if value != null;
+			binding.set( alias.get("var"), value ) if not (value == null);
 		}
 		for ( let alias in _sparql_non_aggregate_aliases(aliases) ) {
 			let value := _sparql_eval_aggregate_expr(
@@ -3965,7 +4004,7 @@ function _sparql_apply_aggregates ( Array bindings, Array group_vars,
 				alias{expr},
 				prefixes,
 			);
-			binding.set( alias.get("var"), value ) if value != null;
+			binding.set( alias.get("var"), value ) if not (value == null);
 		}
 		let keep := true;
 		for ( let expr in having ) {
@@ -4752,7 +4791,7 @@ function sparql_query ( RDFStore store, String query, inherited_dataset := null 
 	throw new SPARQLError(message: "SPARQL query expected; use sparql_update")
 		if _sparql_is_update_ast(query);
 	let parsed := _sparql_parse(query);
-	if ( inherited_dataset != null ) {
+	if ( not (inherited_dataset == null) ) {
 		if ( parsed{dataset_default}.length() == 0 ) {
 			parsed{dataset_default} := inherited_dataset.get( "default", [] );
 		}
